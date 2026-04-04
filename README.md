@@ -1,8 +1,12 @@
 # pyCFRAM
 
-Python-driven CFRAM (Climate Feedback-Response Analysis Method) framework using Fortran RRTMG as the radiation engine.
+A Python-encapsulated implementation of the **Climate Feedback–Response Analysis Method (CFRAM)**. pyCFRAM aims to build a user-friendly, high-efficient, and extendable interface for CFRAM users. It uses `multiprocessing` (and future `f2py`/`mpi4py` support) to exploit the maximum potential of code parallelism without dramatically modifying the original Fortran RRTMG radiation code.
 
-Reproduces the temperature decomposition analysis from Wu et al. (2025, *J. Climate*) for extreme heat events EH13 (Aug 2013) and EH22 (Aug 2022) over East China.
+Currently reproduces the temperature decomposition analysis from Wu et al. (2025, *J. Climate*) for extreme heat events EH13 (Aug 2013) and EH22 (Aug 2022) over East China.
+
+For the CFRAM methodology, please refer to:
+- Lu, J., and M. Cai, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. *Climate Dynamics*.
+- Cai, M., and J. Lu, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. Part II. *Climate Dynamics*.
 
 ## Architecture
 
