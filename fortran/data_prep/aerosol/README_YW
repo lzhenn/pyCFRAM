@@ -1,0 +1,20 @@
+ These RRTMG files are validated.
+ 30 bands: 1-14 for SW, 15-30 for LW.
+
+ BC: black carbon
+ BRC:brown carbon 
+ DU: dust
+ NI: nitrate
+ OC: organic carbon
+ SS: sea salt
+ SU: sulfate
+
+ Need to calculate: optical depth, single scattering albedo, asymmetry factor
+ bext: mass extinction efficiency m2/kg  [radius, relative humidity, lambda] 
+ g: asymmetry factor                     [radius, relative humidity, lambda]
+ bsca: mass scattering efficiency m2/kg  [radius, relative humidity, lambda]
+
+ optical_depth = delta_p/9.8 * bext
+ single scattering albedo = bsca/bext
+
+ 2-D interpolation: linit2 

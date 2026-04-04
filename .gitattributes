@@ -1,0 +1,4 @@
+# Large NetCDF lookup tables (19M + 17M, within GitHub 100M limit)
+# If git-lfs is available, uncomment to track:
+# fortran/RRTMG_LW-master/data/rrtmg_lw.nc filter=lfs diff=lfs merge=lfs -text
+# fortran/RRTMG_SW-master/data/rrtmg_sw.nc filter=lfs diff=lfs merge=lfs -text

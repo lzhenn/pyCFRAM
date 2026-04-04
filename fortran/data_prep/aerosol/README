@@ -1,0 +1,263 @@
+Optical Lookup Table Codes
+See end of document for documentation of sources and versions
+cvs co -r TAG_NAME -d radiation sandbox/colarco/radiation
+The (large) dust ellipsoid database is not in CVS
+Pete Colarco
+
+16Jul2012 - TAG: radiation_0r96
+- Update CARMA to produce sulfate style tables
+
+13Jun2012 - TAG: radiation_0r95
+- Update CARMA to produce similar phase function as
+  GOCART style files
+- Add a new dust refractive index set that merges
+  Colarco et al. 2002 (UV) with Kim et al. 2011 (SW)
+  to Levoni et al. 1997 (LW)  (v8, v9, v10)
+- Add Dubovik et al. spheroid shape distribution to
+  dust code
+
+22Mar2012 - TAG: radiation_0r94
+- Update references in README
+- add P22 and P44 to Mie output
+
+09Feb2012 - TAG: radiation_0r93
+- Update README to note definitions of pmom
+
+02Feb2012 - TAG: radiation_0r93
+- Updates to how spikes are handled coming out of Mie code
+- Refining the number of sub-bins to compute over in Mie code 
+  integration
+- Incorporated Ellipsoid database of dust optical properties
+  from TAMU group (see Meng et al. 2010; driver code is in
+  sub-directory lib/dust)
+- Recommended set of optics tables are:
+  BC.v1_2 - OPAC, Chin et al. 2002
+  OC.v1_2 - OPAC, Chin et al. 2002
+  SU.v3_2 - OPAC refractive index, Tang et al. growth curve, 
+   Chin et al. 2002 particle size properties, 
+   second bin for volcanic aerosols following V. Aquila
+  DU.v5   - Ellipsoid database, Levoni refractive indices
+  SS.v3_2 - OPAC, cap at 95%
+
+25May2010
+- add an example "XX" directory under geosMie
+- add a document "examples.pdf" at top level to illustrate how to
+  use "XX" examples
+
+24May2010
+- all filenames generated are now labeled ".nc" instead of ".hdf"
+- add phase function moment output to BC/OC/SS/SU and partially
+  for DU (all in geosMie path).  See note below.
+- have also added various growth factor forms for SU/SS courtesy
+  of Cynthia Randles
+
+July2008
+- initial code checked in
+
+This set of codes will generate the lookup tables of aerosol optical
+properties used in GEOS-4/5 based on the methodology used to create
+the aerosol optical properties used in GOCART.
+
+There are four main pieces:
+1) MIEV - This is a general purpose Mie calculator developed by Warren
+   Wiscombe a long time ago (Wiscombe, W.J., Improve Mie scattering
+   algorithms, Applied Optics, 19 (9), 1,505-1,509, 1980).  I have
+   modified MIEV to take as input the two parameters you need to run
+   a Mie code (size parameter and refractive index) as well as the
+   number of phase function moments desired (the inputList) and return
+   a small file (mieout.dat) on executation containing the size parameter,
+   extinction and scattering efficiencies, number of phase function
+   moments, the 4 polarized phase function moments, the asymmetry parameter,
+   and the backscattering amplitude.  This structure permits multiple
+   calls of the Mie code with simple I/O.  See the contents of the
+   directory MIEV and especially the MIEV.doc file provided with the
+   code by the author.  A simple Makefile will compile the code with your
+   choice of compiler (it is F77 compatible).
+
+2) Optical databases - We provide copies of the GADS/OPAC databases for
+   cloud and optical properties.  This dataset is courtesy of Michael Hess
+   at LRZ-Muenchen and can be downloaded on the web at:
+   http://www.lrz-muenchen.de/~uh234an/www/radaer/opac-des.html
+   It is unfortunately quite an old dataset.  From here we get certain
+   growth factors and refractive indices for different aerosol species.
+   See the subdirectory "gads".
+
+   We also provide a copy of the HITRAN refractive index of water
+   dataset in the "hitran" subdirectory.  HITRAN is a big, complicated
+   beasty.  I think I downloaded the whole thing and stripped out
+   just the Shettle.dat aerosol file and the refrac.water.txt file.
+   More info on HITRAN is at http://cfa-www.harvard.edu/hitran/
+
+3) A simple library of idl codes is provided in the directory "lib/idl".
+   These are used by the actual table codes described next.
+
+4) The lookup table generation codes are provided in two sub-directories.
+   "geosMie" - This set of codes generates the optical lookup tables
+   for each of the aerosol species used in the model.  See the respective
+   BC/DU/OC/SS/SU sub-directories.  Each sub-directory contains an
+   IDL driver "gocart_??.pro" where "??" is the species (in lower case) and
+   will produce the optical lookup table.  I won't bother to describe
+   the actual construction of the tables at this point.  Suffice to say,
+   for each species a particle size distribution (PSD) is constructed
+   and the Mie code is run at each size bin of that PSD and the optical
+   properties are integrated.  Except for dust, the parameters come from
+   the GADS/OPAC/HITRAN dataset.  For dust we allow that combination as
+   well (version 1) but then also generate optics with other assumptions
+   of refractive indices and even with some data from Ping Yang for 
+   non-spherical dust optical properties.  When the codes are runs, a
+   duplicate copy of the lookup table optics_??.hdf is dropped in the "x"
+   directory.
+   "geosBands" - This piece of code generates the band integrated optical
+   lookup tables used in the GEOS-5 radiation code for aerosol heating
+   rates.  It presumes that the geosMie tables are all generated.  Go
+   in here and run "gocart_bands.pro" and it will generate tables in the
+   local directory as well as in the "x" directory.
+
+Phase function moments:
+   I have added the ability to output the phase function moments to the
+   look-up tables.  Generally, I have previously created files with names
+   like "optics_DU.v1.nc".  I have now created files with names like
+   "optics_DU.v1_pmom.nc".  It should be understood that the values in the
+   two files are identical *except* for the presence of the phase function
+   moments in the "v1_pmom" style files.  The Mie code was always computing
+   the phase function moments, but I was never bothering to write them
+   to the files.
+   Caveats:
+    - at the moment, I don't bother to prepare these on the band files
+    - for geosMie/DU directory, this computation is only carried out on
+      "v1" of the dust table, as it's the most straightforward.  With a 
+      little work it could be extended to "v2".  Later versions ("v3" and 
+      "v4") are based on Ping Yang's tables and don't provide me the phase
+      function moments.
+
+Notes:
+   Prior to running any of these codes, source the top-level setup.csh
+   file to (i) compile the Mie code (go into MIEV and check the Makefile
+   if it barfs on compilation; maybe you need to select a different compiler)
+   and (ii) it sets your IDL path to use the "lib/idl" codes.
+   Most of the lookup tables generate in a few 10s of minutes.  The SS will
+   take considerably longer on account of the large particle sizes and
+   the RH dimension.  The band averaged tables are composed very quickly
+   since they come from the already generated lookup tables.
+
+Future:
+   Wouldn't it be nice to have a radiative transfer code here (rt4, disort)?
+   How about a radiative forcing calculator?
+
+PMOM
+The tables (may) contain the moments of the phase function expansion.  The
+variable is called "pmom" and is dimensioned (npol,nmom,radius,rh,lambda).
+ nmom = number of phase function moments in the file
+ npol = index of the phase function quantity
+npol = 4 or 6
+index  moments of quantity
+-----  -------------------
+0      P11
+1      P12
+2      P33
+3      P34
+4      P22
+5      P44
+Note that for Mie based tables we only have npol = 4.  For the ellipsoid
+tables we have npol = 6 and have appended the P22 and P44 as the last
+two indices.  From symmetry, for Mie based tables we know P22 = P11 and
+P44 = P33.
+
+TABLE VERSIONING DOCUMENTATION
+There is a naming convention of sorts.  Two sorts of tables of provided.
+ optics_XX.vvv.nc
+ opticsBands_XX.vvv.nc
+where "XX" is the species (DU, SU, SS, BC, OC) and "vvv" is a version indicator.
+"optics_XX" refers to tables on channels (wavelengths) suitable for radiance
+calculations, while "opticsBands_XX" refers to tables on the Chou/Suarez 18
+bands used internally for aerosol forcing calculation.
+NOTE: in some older tables "vvv" is omitted.  These are essentially the "v1"
+tables, although they may not be zero-diff.  In some tables "vvv" contains a
+flag "pmom" which is used to indicate that phase function moments are included
+in the tables (needed for radiance calculations).  Where those files exist
+there is a version where "vvv" omits "pmom" which is the same table but omitting
+the phase function moments (so, a smaller file).  Beginning with TAG radiation_0r93
+I only produce a single file which includes the phase function moments and I
+omit the "pmom" from the versioning tag.
+Nominally I'm describing the GOCART style files (geosMie and geosBands sub-directories).
+In some cases there are similar files for CARMA (carma_optics_XX and carma_opticsBands_XX).
+
+Not all versions may be on the system you are working with.
+
+Species: DU
+ v11_2   radiation_0r96       OPAC refractive indices with Dubovik spheroids
+ v10_2   radiation_0r95       Like v8, but use Ellipsoid and spheroid shapes from Dubovik
+ v9_2    radiation_0r95       Like v8, but use Ellipsoid and Meng et al. shape
+ v8_2    radiation_0r95       Merge Colarco/Kim shortwave with Levoni longwave, Mie
+ v7_2    radiation_0r94       Like v7 but now include phase function at 180 as variable in table
+ v6_2    radiation_0r94       Like v6 but now include phase function at 180 as variable in table, also 6 phase moments
+ v5_2    radiation_0r94       Like v5 but now include phase function at 180 as variable in table
+ v1_2    radiation_0r94       Like v1 but now include phase function at 180 as variable in table, also 6 phase moments
+ v7      radiation_0r93       Ellipsoid database (Meng et al. 2010) using OPAC refractive indices
+                              Note: not all OPAC refractive indices are supported (in the longwave) so I cap to database
+ v6      radiation_0r93       Levoni et al. (1997) refractive indices and spherical particles
+ v5      radiation_0r93       Ellipsoid database (Meng et al. 2010) and Levoni et al. (1997) refractive indices
+ v1                           OPAC refractive indices, spherical particles
+ v2                           OPAC refractive indices, spherical particles *except* mr = 1.45 and mi = OPAC/3 for
+                              wavelength < 2.5 um *and* then replace refractive index in range 440 - 1020 nm with
+                              values from AERONET/OMI
+ v3                           OPAC refractive indices *but* read from older Ping Yang ellipsoid database (no pmom)
+ v4                           Refractive indices as in v2 *but* read from older Ping Yang ellipsoid database (no pmom)
+
+Species: SS
+ v5_3    radiation_0r94       Like V5_2 but now include all 6 phase matrix elements and phase function at 180
+ v4_3    radiation_0r94       Like V4_2 but now include all 6 phase matrix elements and phase function at 180
+ v3_3    radiation_0r94       Like V3_2 but now include all 6 phase matrix elements and phase function at 180
+ v2_3    radiation_0r94       Like V2 but now include all 6 phase matrix elements and phase function at 180
+ v5_2    radiation_0r93       OPAC refractive indices and Tang growth curve, but with growth capped at 95% RH
+ v4_2    radiation_0r93       OPAC refractive indices and Tang growth curve
+ v3_2    radiation_0r93       OPAC refractive indices and Gerber growth curve, but with growth capped at 95% RH
+ v2                           OPAC refractive indices and Gerber growth curve
+ v1                           Don't use this (optics_SS.nc)
+
+Species: SU
+ v4_3    radiation_0r94       Like v4_2 but now include all 6 phase matrix elements and phase function at 180; change volcanic size params
+ v3_3    radiation_0r94       Like v3_2 but now include all 6 phase matrix elements and phase function at 180; change volcanic size params
+ v2_3    radiation_0r94       Like v2 but now include all 6 phase matrix elements and phase function at 180; change volcanic size params
+ v1_3    radiation_0r94       Like v1 but now include all 6 phase matrix elements and phase function at 180; change volcanic size params
+ v4_2    radiation_0r93       Like v4_1 but with a second size bin suitable for volcanic sulfate aerosols after Aquila et al. 2012
+ v3_2    radiation_0r93       Like v3_1 but with a second size bin suitable for volcanic sulfate aerosols after Aquila et al. 2012
+ v4_1                         Like v4 but updates definition of effective radius
+ v3_1                         Like v3 but updates definition of effective radius
+ v1                           OPAC refractive indices and growth curve
+ v2                           OPAC refractive indices and growth curve, cap growth at RH = 95%
+ v3                           OPAC refractive indices, Tang et al. 1997 growth curve
+ v4                           OPAC refractive indices, Tang et al. 1997 growth curve, cap growth at RH = 95%
+
+Species: BC
+ v2_3    radiation_0r94       Like v2_2 but now include all 6 phase matrix elements and phase function at 180
+ v1_3    radiation_0r94       Like v1_2 but now include all 6 phase matrix elements and phase function at 180
+ v2_2    radiation_0r93       Like v2_1 but fix an error in how ripple spikes were detected
+ v1_2    radiation_0r93       Like v1_1 but fix an error in how ripple spikes were detected
+ v1_1                         Like v1 but change sense of effective radius
+ v2_1                         Like v2 but change sense of effective radius
+ v1                           OPAC refractive indices and growth curve, Chin et al. 2002 particle properties
+ v2                           OPAC refractive indices and growth curve, Chin et al. 2002 particle properties, cap growth at RH = 95%
+
+Species: OC
+ v2_3    radiation_0r94       Like v2_2 but now include all 6 phase matrix elements and phase function at 180
+ v1_3    radiation_0r94       Like v1_2 but now include all 6 phase matrix elements and phase function at 180
+ v2_2    radiation_0r93       Like v2_1 but fix an error in how ripple spikes were detected
+ v1_2    radiation_0r93       Like v1_1 but fix an error in how ripple spikes were detected
+ v1_1                         Like v1 but change sense of effective radius
+ v2_1                         Like v2 but change sense of effective radius
+ v1                           OPAC refractive indices and growth curve, Chin et al. 2002 particle properties
+ v2                           OPAC refractive indices and growth curve, Chin et al. 2002 particle properties, cap growth at RH = 95%
+
+
+References
+[1]	C. Levoni, M. Cervino, and R. Guzzi, “Atmospheric aerosol optical properties: a database of radiative characteristics for different components and classes,” Appl Optics, 1997.
+[2]	I. Tang, A. Tridico, and K. Fung, “Thermodynamic and optical properties of sea salt aerosols,” J Geophys Res-Atmos, vol. 102, pp. 23269–23275, 1997.
+[3]	S. Gong, L. Barrie, and J. Blanchet, “Modeling sea-salt aerosols in the atmosphere .1. Model development,” J Geophys Res-Atmos, vol. 102, no. 3, pp. 3805–3818, Jan. 1997.
+[4]	M. Hess, P. Koepke, and I. Schult, “Optical properties of aerosols and clouds: The software package OPAC,” B Am Meteorol Soc, vol. 79, no. 5, pp. 831–844, Jan. 1998.
+[5]	M. Chin, P. Ginoux, S. Kinne, O. Torres, B. Holben, B. Duncan, R. Martin, J. Logan, A. Higurashi, and T. Nakajima, “Tropospheric aerosol optical thickness from the GOCART model and comparisons with satellite and Sun photometer measurements,” J Atmos Sci, vol. 59, no. 3, pp. 461–483, Jan. 2002.
+[6]	Z. Meng, P. Yang, G. W. Kattawar, L. Bi, K. N. Liou, and I. Laszlo, “Single-scattering properties of tri-axial ellipsoidal mineral dust aerosols: A database for application to radiative transfer calculations,” J Aerosol Sci, vol. 41, no. 5, pp. 501–512, Jan. 2010.
+[7]	V. Aquila, “Dispersion of the volcanic sulfate cloud from a Mount Pinatubo-like eruption,” Dec. 2011.
+[8]	O. Dubovik, A. Sinyuk, T. Lapyonok, B. N. Holben, M. Mishchenko, P. Yang, T. F. Eck, H. Volten, O. Muñoz, B. Veihelmann, W. J. van der Zande, J.-F. Leon, M. Sorokin, and I. Slutsker, “Application of spheroid models to account for aerosol particle nonsphericity in remote sensing of desert dust,” J Geophys Res, vol. 111, no. 11, 2006.
+[9]	P. Colarco, O. Toon, O. Torres, and P. Rasch, “Determining the UV imaginary index of refraction of Saharan dust particles from Total Ozone Mapping Spectrometer data using a three-dimensional model of dust transport,” J Geophys Res-Atmos, vol. 107, pp. –, 2002.
+[10]	D. Kim, M. Chin, H. Yu, T. F. Eck, A. Sinyuk, A. Smirnov, and B. N. Holben, “Dust optical properties over North Africa and Arabian Peninsula derived from the AERONET dataset,” Atmos Chem Phys, vol. 11, no. 20, pp. 10733–10741, 2011.

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Fortran compiled artifacts
+*.o
+*.mod
+*_dbl.obj/
+cfram_rrtmg
+cfram_rrtmg_1col
+fortran/data_output/
+fortran/data_prep/*.dat
+
+# Data directories (large, obtained separately)
+paper_data/
+era5_data/
+cfram_output/
+
+# Generated outputs
+figures/
+
+# Internal development files
+OA/
+PLAN.md
+PLAN01.md
+PLAN02.md
+session_log.md
+CLAUDE.md
+.claude/
+tasks/
+
+# PDF / large binary
+*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
