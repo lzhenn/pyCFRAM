@@ -132,5 +132,4 @@ pyCFRAM/
 See [docs/input_spec.md](docs/input_spec.md) for the standard NetCDF input format. pyCFRAM takes any two atmospheric states (base, perturbed) — it does not prescribe how they are defined.
 
 ## Reference
-
-Wu et al. (2025), *Journal of Climate*.
+Wu, Q., Li, Q., Zhang, T., Sun, X., Yang, S. and Hu, X., 2025. Quantitative attribution of 2013 and 2022 extremely hot events in China: insights from a climate feedback–response perspective. Journal of Climate, 38(17), pp.4331-4349.
