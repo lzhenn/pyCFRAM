@@ -4,6 +4,7 @@
 # RRTMG radiation parameters
 radiation:
   scon: 1360.98        # solar constant (W/m2)
+  co2_ppmv: 395.0      # CO2 default (used if not in input data)
   ch4_ppmv: 1.6        # methane concentration
   n2o_ppmv: 0.28       # nitrous oxide concentration
   cloud_re_ice: 5.0    # ice particle effective radius (microns)
