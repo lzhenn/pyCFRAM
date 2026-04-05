@@ -73,7 +73,7 @@ def load_paper_aerosol(case_name):
 
 
 def load_self_aerosol(case_name):
-    """Load total aerosol dT from self-computed cfram_result.nc."""
+    """Load per-species + total aerosol dT from self-computed cfram_result.nc."""
     cfg = load_case(case_name)
     result_file = os.path.join(cfg['_output_dir'], 'cfram_result.nc')
     if not os.path.exists(result_file):
@@ -85,9 +85,22 @@ def load_self_aerosol(case_name):
     sfc = -1  # surface = last index
 
     data = {}
+    # Per-species (from Planck matrix × paper forcing)
+    for species in ['bc', 'oc', 'sulf', 'seas', 'dust']:
+        vname = 'dT_' + species
+        if vname in nc.variables:
+            arr = np.array(nc.variables[vname][sfc, :, :], dtype=np.float64)
+            data[species] = np.where(np.abs(arr) > 900, np.nan, arr)
+
+    # Total from RRTMG
     if 'dT_aerosol' in nc.variables:
         arr = np.array(nc.variables['dT_aerosol'][sfc, :, :], dtype=np.float64)
         data['total'] = np.where(np.abs(arr) > 900, np.nan, arr)
+
+    # If per-species available but no RRTMG total, sum species
+    if 'total' not in data and 'bc' in data:
+        data['total'] = sum(np.nan_to_num(data.get(s, 0)) for s in ['bc','oc','sulf','seas','dust'])
+
     nc.close()
     return lats, lons, data
 
@@ -162,8 +175,8 @@ def main():
         print("Saved: %s" % outpath)
     plt.close()
 
-    # === Self-computed version (total aerosol only) ===
-    fig2, axes2 = plt.subplots(1, ncols, figsize=(5 * ncols, 3.5),
+    # === Self-computed version (per-species via Planck matrix) ===
+    fig2, axes2 = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.0 * nrows),
                                subplot_kw={'projection': ccrs.PlateCarree()},
                                squeeze=False)
     has_self = False
@@ -174,16 +187,20 @@ def main():
         case_label = cfg.get('case_name', cn.upper())
 
         lats, lons, sdata = load_self_aerosol(cn)
-        if sdata is not None and 'total' in sdata:
+        if sdata is not None and len(sdata) > 0:
             has_self = True
-            ax = axes2[0, col]
-            field = np.clip(np.nan_to_num(sdata['total'], nan=0), -5, 5)
-            plot_panel(ax, lons, lats, field, "Total Aerosol %s [self]" % case_label,
-                      norm, CMAP, kr_list)
+            for row, (key, label) in enumerate(AER_ROWS):
+                ax = axes2[row, col]
+                field = sdata.get(key, np.full((len(lats), len(lons)), np.nan))
+                field = np.clip(np.nan_to_num(field, nan=0), -5, 5)
+                pl = labels_abc[row * ncols + col]
+                plot_panel(ax, lons, lats, field,
+                          "(%s) %s %s [self]" % (pl, label, case_label),
+                          norm, CMAP, kr_list)
 
     if has_self:
-        fig2.subplots_adjust(bottom=0.15)
-        cbar_ax2 = fig2.add_axes([0.15, 0.05, 0.7, 0.03])
+        fig2.subplots_adjust(bottom=0.06, top=0.96, left=0.06, right=0.94, hspace=0.25, wspace=0.15)
+        cbar_ax2 = fig2.add_axes([0.15, 0.02, 0.7, 0.015])
         fig2.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=CMAP), cax=cbar_ax2,
                      orientation='horizontal', ticks=LEVELS_AER,
                      label='Partial Temperature (K)')

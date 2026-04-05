@@ -208,6 +208,7 @@ def process_column(args):
     result = {}
     rad_terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm']
     nonrad_terms = ['lhflx', 'shflx', 'sfcdyn']
+    aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']
 
     if ret == 0:
         # Read forcing from Fortran
@@ -257,19 +258,20 @@ def process_column(args):
             for t in rad_terms:
                 result['dT_'+t] = solve_dT(result['frc_'+t])
 
-            # Non-radiative terms: forcing from paper_data
-            if 'frc_lhflx' in d:
-                for t in nonrad_terms:
+            # Non-radiative + per-species aerosol terms: forcing from paper_data
+            extra_terms = nonrad_terms + aer_species_terms
+            for t in extra_terms:
+                if 'frc_' + t in d:
                     frc_full = d['frc_' + t][:, ilat, ilon]
                     result['dT_' + t] = solve_dT(frc_full)
         else:
-            for t in rad_terms + nonrad_terms:
+            for t in rad_terms + nonrad_terms + aer_species_terms:
                 result['dT_'+t] = np.full(NLEV+1, np.nan)
     else:
         for t in rad_terms:
             result['frc_'+t] = np.full(NLEV+1, np.nan)
             result['dT_'+t] = np.full(NLEV+1, np.nan)
-        for t in nonrad_terms:
+        for t in nonrad_terms + aer_species_terms:
             result['dT_'+t] = np.full(NLEV+1, np.nan)
 
     shutil.rmtree(tmpdir)
@@ -360,6 +362,17 @@ def main():
             frc_full = np.where(np.abs(frc_full) > 900, 0.0, frc_full)
             data['frc_' + nonrad_term] = frc_full
             print("  frc_%s: sfc mean=%.3f W/m2" % (nonrad_term, np.nanmean(frc_full[NLEV])))
+        # Also load per-species aerosol forcing from same file
+        aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']
+        for aer_term in aer_species_terms:
+            if aer_term in nc_pf.variables:
+                frc_3d = np.array(nc_pf.variables[aer_term][0, ::-1, :, :], dtype=np.float64)
+                frc_full = np.zeros((NLEV + 1, nlat, nlon))
+                frc_full[:NLEV, :, :] = frc_3d[:NLEV, :, :]
+                frc_full[NLEV, :, :] = np.array(nc_pf.variables[aer_term][0, 0, :, :], dtype=np.float64)
+                frc_full = np.where(np.abs(frc_full) > 900, 0.0, frc_full)
+                data['frc_' + aer_term] = frc_full
+                print("  frc_%s: sfc mean=%.3f W/m2" % (aer_term, np.nanmean(frc_full[NLEV])))
         nc_pf.close()
     else:
         print("No non-radiative forcing provided (radiative decomposition only)")
@@ -377,7 +390,8 @@ def main():
     # Result arrays
     terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm']
     nonrad_terms = ['lhflx', 'shflx', 'sfcdyn']
-    all_dT_terms = terms + nonrad_terms
+    aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']
+    all_dT_terms = terms + nonrad_terms + aer_species_terms
     dT_out = {t: np.full((NLEV+1, nlat, nlon), np.nan) for t in all_dT_terms}
     frc_out = {t: np.full((NLEV+1, nlat, nlon), np.nan) for t in terms}
 
@@ -387,7 +401,7 @@ def main():
             for t in terms:
                 dT_out[t][:, ilat, ilon] = result['dT_'+t]
                 frc_out[t][:, ilat, ilon] = result['frc_'+t]
-            for t in nonrad_terms:
+            for t in nonrad_terms + aer_species_terms:
                 if 'dT_'+t in result:
                     dT_out[t][:, ilat, ilon] = result['dT_'+t]
             done += 1

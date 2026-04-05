@@ -26,7 +26,7 @@
              end do
         end do
 
-        open(99,file='data_output/'//trim(filename),access='sequential',form='unformatted',status='replace',recl=ntime*(nlev+1)*nlat*nlon*2)
+        open(99,file='data_output/'//trim(filename),access='sequential',form='unformatted',status='replace',recl=ntime*(nlev+1)*nlat*nlon*8)
         write(99) var_ncl
         close(99)
         return
