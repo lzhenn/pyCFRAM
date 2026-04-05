@@ -1,0 +1,15 @@
+# EH22: Extreme Heat August 2022 vs 2003-2022 climatology
+case_name: EH22
+description: "East China extreme heat event, Aug 3-24, 2022"
+
+input:
+  base_pres: input/base_pres.nc
+  base_surf: input/base_surf.nc
+  perturbed_pres: input/perturbed_pres.nc
+  perturbed_surf: input/perturbed_surf.nc
+  nonrad_forcing: input/nonrad_forcing.nc
+
+plot:
+  key_region:
+    lon: [103, 122]
+    lat: [27, 35]

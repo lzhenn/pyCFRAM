@@ -1,0 +1,15 @@
+# EH13: Extreme Heat August 2013 vs 2003-2022 climatology
+case_name: EH13
+description: "East China extreme heat event, Aug 5-17, 2013"
+
+input:
+  base_pres: input/base_pres.nc
+  base_surf: input/base_surf.nc
+  perturbed_pres: input/perturbed_pres.nc
+  perturbed_surf: input/perturbed_surf.nc
+  nonrad_forcing: input/nonrad_forcing.nc
+
+plot:
+  key_region:
+    lon: [110, 122]
+    lat: [28, 36]

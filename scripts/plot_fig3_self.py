@@ -10,7 +10,7 @@ All terms self-computed:
 Run on hqlx204:
     python3 scripts/plot_fig3_self.py
 """
-import os
+import os, sys
 import numpy as np
 from netCDF4 import Dataset
 import matplotlib
@@ -21,16 +21,16 @@ import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SELF_DIR = os.path.join(PROJECT_ROOT, "cfram_output")
-PAPER_BASE = os.path.join(PROJECT_ROOT, "paper_data", "cfram_out")
-OUTDIR = os.path.join(PROJECT_ROOT, "figures")
-CASES_PAPER = {'EH13': 'case_eh13_c20250102', 'EH22': 'case_eh22_c20250118'}
+import argparse
 
-LEVELS_DT = [-15, -7, -2, -0.5, 0, 0.5, 2, 7, 15]
-CMAP = plt.cm.RdBu_r
-KEY_REGIONS = {'EH13': [110, 122, 28, 36], 'EH22': [103, 122, 27, 35]}
-NLEV = 37
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.config import load_case, defaults, get_plev, PROJECT_ROOT
+
+_defaults = defaults()
+LEVELS_DT = _defaults['plotting']['levels_dt']
+CMAP_NAME = _defaults['plotting']['cmap']
+CMAP = plt.cm.get_cmap(CMAP_NAME)
+NLEV = len(get_plev())
 
 PLOT_ROWS = [
     ('wv',     'Water Vapor'),
@@ -42,10 +42,10 @@ PLOT_ROWS = [
 ]
 
 
-def load_case(case_label):
+def load_case_data(case_name):
     """Load self-computed results from NetCDF."""
-    cl = case_label.lower()
-    self_file = os.path.join(SELF_DIR, 'cfram_%s_python.nc' % cl)
+    case_cfg = load_case(case_name)
+    self_file = os.path.join(case_cfg['_output_dir'], 'cfram_result.nc')
     nc = Dataset(self_file)
     lats = np.array(nc.variables['lat'][:])
     lons = np.array(nc.variables['lon'][:])
@@ -96,66 +96,52 @@ def plot_panel(ax, lons, lats, field, title, norm, cmap, key_region=None):
 
 
 def main():
-    os.makedirs(OUTDIR, exist_ok=True)
+    parser = argparse.ArgumentParser(description='Plot CFRAM decomposition maps')
+    parser.add_argument('--case', nargs='+', required=True,
+                        help='Case name(s), e.g., --case eh13 eh22')
+    args = parser.parse_args()
+
+    case_names = args.case
+    ncols = len(case_names)
     norm = mcolors.BoundaryNorm(LEVELS_DT, CMAP.N, clip=True)
     nrows = len(PLOT_ROWS)
 
-    fig, axes = plt.subplots(nrows, 2, figsize=(10, 3.0 * nrows),
-                             subplot_kw={'projection': ccrs.PlateCarree()})
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.0 * nrows),
+                             subplot_kw={'projection': ccrs.PlateCarree()},
+                             squeeze=False)
 
     labels_abc = 'abcdefghijklmnopqrstuvwxyz'
-    for col, cl in enumerate(['EH13', 'EH22']):
-        lats, lons, data = load_case(cl)
+    for col, case_name in enumerate(case_names):
+        case_cfg = load_case(case_name)
+        lats, lons, data = load_case_data(case_name)
+        key_region = case_cfg.get('plot', {}).get('key_region')
+        kr = None
+        if key_region:
+            kr = key_region['lon'] + key_region['lat']  # [lon0,lon1,lat0,lat1]
+        case_label = case_cfg.get('case_name', case_name.upper())
+
         for row, (key, label) in enumerate(PLOT_ROWS):
             ax = axes[row, col]
             field = data.get(key, np.full((len(lats), len(lons)), np.nan))
             field = np.clip(np.nan_to_num(field, nan=0), -20, 20)
-            panel_label = labels_abc[row * 2 + col]
-            title = "(%s) %s %s" % (panel_label, label, cl)
-            plot_panel(ax, lons, lats, field, title, norm, CMAP, KEY_REGIONS[cl])
+            panel_label = labels_abc[row * ncols + col]
+            title = "(%s) %s %s" % (panel_label, label, case_label)
+            plot_panel(ax, lons, lats, field, title, norm, CMAP, kr)
 
     fig.subplots_adjust(bottom=0.06, top=0.96, left=0.06, right=0.94, hspace=0.25, wspace=0.15)
     cbar_ax = fig.add_axes([0.15, 0.02, 0.7, 0.015])
     cb = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=CMAP), cax=cbar_ax,
                       orientation='horizontal', ticks=LEVELS_DT)
     cb.set_label('Partial Temperature (K)', fontsize=10)
-    outpath = os.path.join(OUTDIR, 'fig3_self_computed.png')
+
+    # Save to first case's figures dir
+    first_cfg = load_case(case_names[0])
+    outdir = first_cfg['_figures_dir']
+    os.makedirs(outdir, exist_ok=True)
+    outpath = os.path.join(outdir, 'fig3_decomposition.png')
     fig.savefig(outpath, dpi=200, bbox_inches='tight')
     plt.close()
     print("Saved: %s" % outpath)
-
-    # Validation vs paper
-    print("\n=== Validation vs paper_data ===")
-    for cl in ['EH13', 'EH22']:
-        lats, lons, ds = load_case(cl)
-        paper_dir = os.path.join(PAPER_BASE, CASES_PAPER[cl])
-        files = os.listdir(paper_dir)
-        nc = Dataset(os.path.join(paper_dir, [f for f in files if 'partial_t' in f][0]))
-        nc2 = Dataset(os.path.join(paper_dir, [f for f in files if 'total_t' in f][0]))
-        skip = {'time','lat','lon','lev','bounds_time','bounds_latitude','bounds_longitude','bounds_level'}
-
-        paper = {}
-        paper['wv'] = np.array(nc.variables['wv'][0, 0, :, :], dtype=np.float64)
-        paper['cld'] = np.array(nc.variables['cld'][0, 0, :, :], dtype=np.float64)
-        paper['aer'] = sum(np.array(nc.variables[v][0, 0, :, :], dtype=np.float64)
-                          for v in ['bc','oc','sulf','dust','seas'])
-        paper['sfc'] = sum(np.array(nc.variables[v][0, 0, :, :], dtype=np.float64)
-                          for v in ['sfcdyn','lhflx','shflx'])
-        paper['atmdyn'] = np.array(nc.variables['atmdyn'][0, 0, :, :], dtype=np.float64)
-        tv = [v for v in nc2.variables if v not in skip][0]
-        paper['total'] = np.array(nc2.variables[tv][0, 0, :, :], dtype=np.float64)
-        nc.close(); nc2.close()
-
-        print("\n%s:" % cl)
-        for key in ['wv', 'cld', 'aer', 'sfc', 'atmdyn', 'total']:
-            s = ds[key]
-            p = paper[key]
-            mask = np.isfinite(s) & np.isfinite(p) & (np.abs(p) < 900) & (np.abs(s) < 900)
-            if mask.sum() == 0: continue
-            diff = s[mask] - p[mask]
-            corr = np.corrcoef(s[mask], p[mask])[0, 1]
-            print("  %-8s: RMSE=%.3f K, bias=%.3f K, corr=%.4f" %
-                  (key, np.sqrt(np.mean(diff**2)), np.mean(diff), corr))
 
 
 if __name__ == '__main__':

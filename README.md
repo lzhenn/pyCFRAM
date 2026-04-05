@@ -67,33 +67,37 @@ paper_data/
 
 ## Quickstart: Reproduce Fig.3
 
-### Step 1: Extract full-field input
+### Step 1: Prepare case input from paper_data
 
 ```bash
-python3 scripts/extract_full_field.py --case eh13
-python3 scripts/extract_full_field.py --case eh22
+python3 scripts/prepare_from_paper_data.py \
+    --paper_dir paper_data/cfram_out/case_eh13_c20250102 --case eh13
+python3 scripts/prepare_from_paper_data.py \
+    --paper_dir paper_data/cfram_out/case_eh22_c20250118 --case eh22
 ```
 
-Reads `paper_data/` input files, computes aerosol optical properties, writes Fortran binary to `fortran/data_prep/`.
-
-### Step 2: Run CFRAM decomposition (parallel)
+### Step 2: Run CFRAM (one command per case)
 
 ```bash
-python3 scripts/run_parallel_python.py --case eh13 --nproc 40
-python3 scripts/run_parallel_python.py --case eh22 --nproc 40
+python3 run_case.py eh13
+python3 run_case.py eh22
 ```
 
-9801 grid points (81 lat x 121 lon), each running an independent single-column RRTMG calculation. On 40 cores, each case takes ~20 minutes.
+This extracts input, runs parallel CFRAM decomposition (all CPUs by default, ~20 min/case), and plots results. Output in `cases/eh13/output/` and `cases/eh13/figures/`.
 
-Output: `cfram_output/cfram_eh13_python.nc`, `cfram_eh22_python.nc`
-
-### Step 3: Plot
+Or run individual steps:
 
 ```bash
-python3 scripts/plot_fig3_self.py
+python3 run_case.py eh13 --step extract   # only extract input
+python3 run_case.py eh13 --step run       # only run CFRAM
+python3 run_case.py eh13 --step plot      # only plot
 ```
 
-Output: `figures/fig3_self_computed.png`
+### Adding a new case
+
+1. Create `cases/my_case/case.yaml` (see `cases/eh13/case.yaml` for template)
+2. Place input NetCDF files in `cases/my_case/input/` (see `docs/input_spec.md`)
+3. Run: `python3 run_case.py my_case`
 
 ## Project Structure
 

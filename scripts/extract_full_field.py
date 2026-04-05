@@ -1,46 +1,28 @@
 #!/usr/bin/env python3
-"""Phase 3: Extract full-field data from paper_data for Fortran CFRAM.
+"""Extract full-field data from input NetCDF for Fortran CFRAM.
 
-Reads paper_data input_check.nc (base+warm) for one case,
-writes full-field Fortran direct-access binary files.
-Also computes aerosol optical properties from mixing ratios.
+Reads base/perturbed state NetCDF files (per input_spec),
+computes aerosol optical properties, writes Fortran binary files.
 
-Run on hqlx204:
+Usage:
     python3 scripts/extract_full_field.py --case eh13
-    python3 scripts/extract_full_field.py --case eh22
 """
 import os, sys, argparse
 import numpy as np
 from netCDF4 import Dataset
 
-# ---- Config ----
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PAPER_BASE = os.path.join(PROJECT_ROOT, "paper_data", "cfram_out")
-FORTRAN_DIR = os.path.join(PROJECT_ROOT, "fortran")
-LOOKUP_DIR = os.path.join(PROJECT_ROOT, "fortran", "data_prep", "aerosol")
-SCON = 1360.98
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.config import load_case, defaults, get_plev, get_aerosol_map, get_fortran_dir, get_lookup_dir
+from core.constants import NBND_LW, NBND_SW
 
-CASES = {
-    'eh13': 'case_eh13_c20250102',
-    'eh22': 'case_eh22_c20250118',
-}
+FORTRAN_PLEV = get_plev()
+SCON = defaults()['radiation']['scon']
+LOOKUP_DIR = get_lookup_dir()
+FORTRAN_DIR = get_fortran_dir()
 
-FORTRAN_PLEV = np.array([1.,2.,3.,5.,7.,10.,20.,30.,50.,70.,100.,125.,150.,175.,200.,
-    225.,250.,300.,350.,400.,450.,500.,550.,600.,650.,700.,750.,775.,
-    800.,825.,850.,875.,900.,925.,950.,975.,1000.])
-
-NBND_LW = 16
-NBND_SW = 14
-
-# Aerosol mapping: paper_data var -> (lookup_file_LW, lookup_file_SW, rd)
-AEROSOL_MAP = {
-    'bc':    ('opticsBands_BC.v1_3.RRTMG.nc', 'opticsBands_BC.v1_5.RRTMG.nc', 2),
-    'ocphi': ('opticsBands_OC.v1_3.RRTMG.nc', 'opticsBands_OC.v1_5.RRTMG.nc', 2),
-    'ocpho': ('opticsBands_OC.v1_3.RRTMG.nc', 'opticsBands_OC.v1_5.RRTMG.nc', 1),
-    'sulf':  ('opticsBands_SU.v1_3.RRTMG.nc', 'opticsBands_SU.v1_5.RRTMG.nc', 0.16e-6),
-    'ss':    ('opticsBands_SS.v3_5.RRTMG.nc', 'opticsBands_SS.v3_5.RRTMG.nc', 3),
-    'dust':  ('opticsBands_DU.v15_3.RRTMG.nc', 'opticsBands_DU.v15_5.RRTMG.nc', 3),
-}
+# Build aerosol map from config: {species: (lw_file, sw_file, rd)}
+_aer_cfg = get_aerosol_map()
+AEROSOL_MAP = {k: (v['lw'], v['sw'], v['rd']) for k, v in _aer_cfg.items()}
 
 
 def write_bin(filepath, data):
@@ -159,20 +141,19 @@ def compute_aerosol_full_field(aer_data, rh, thick, dens, lookup_dir):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--case', default='eh13', choices=['eh13', 'eh22'])
+    parser.add_argument('--case', required=True, help='Case name (directory under cases/)')
     args = parser.parse_args()
 
-    case_dir = os.path.join(PAPER_BASE, CASES[args.case])
+    cfg = load_case(args.case)
     outdir = os.path.join(FORTRAN_DIR, "data_prep")
     os.makedirs(outdir, exist_ok=True)
-    print("=== Full-field extraction: %s ===" % args.case.upper())
+    print("=== Full-field extraction: %s ===" % cfg.get('case_name', args.case))
 
-    # ---- Load paper_data ----
-    files = os.listdir(case_dir)
-    nc_bp = Dataset(os.path.join(case_dir, [f for f in files if 'baseline_pres' in f][0]))
-    nc_bs = Dataset(os.path.join(case_dir, [f for f in files if 'baseline_surf' in f][0]))
-    nc_ap = Dataset(os.path.join(case_dir, [f for f in files if 'all_pres' in f][0]))
-    nc_as = Dataset(os.path.join(case_dir, [f for f in files if 'all_surf' in f][0]))
+    # ---- Load input data (standard format per input_spec) ----
+    nc_bp = Dataset(cfg['input']['base_pres'])
+    nc_bs = Dataset(cfg['input']['base_surf'])
+    nc_ap = Dataset(cfg['input']['perturbed_pres'])
+    nc_as = Dataset(cfg['input']['perturbed_surf'])
 
     lats = np.array(nc_bp.variables['lat'][:])
     lons = np.array(nc_bp.variables['lon'][:])

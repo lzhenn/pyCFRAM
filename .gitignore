@@ -17,6 +17,10 @@ fortran/data_prep/*.dat
 # Data directories (large, obtained separately)
 paper_data/
 era5_data/
+
+# Case runtime outputs (reproducible)
+cases/*/output/
+cases/*/figures/
 cfram_output/
 
 # Generated outputs

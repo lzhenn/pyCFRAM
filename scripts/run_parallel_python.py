@@ -1,48 +1,34 @@
 #!/usr/bin/env python3
-"""Phase 4 Python: Embarrassingly parallel CFRAM using multiprocessing.
+"""Embarrassingly parallel CFRAM using multiprocessing.
 
 Each worker:
 1. Extracts single column from pre-loaded global data
 2. Writes temp binary files to a unique temp dir
 3. Runs single-column cfram_rrtmg executable
-4. Reads output and stores in shared result arrays
+4. Reads forcing + Planck matrix, solves dT in Python
 
-Run on hqlx127 (48 cores):
+Usage:
     python3 scripts/run_parallel_python.py --case eh13 --nproc 40
 """
 import os, sys, argparse, struct, tempfile, shutil
 import numpy as np
-from multiprocessing import Pool, shared_memory
+from multiprocessing import Pool
 from netCDF4 import Dataset
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PAPER_BASE = os.path.join(PROJECT_ROOT, "paper_data", "cfram_out")
-FORTRAN_EXE_DIR = os.path.join(PROJECT_ROOT, "fortran")
-LOOKUP_DIR = os.path.join(PROJECT_ROOT, "fortran", "data_prep", "aerosol")
-OUTDIR = os.path.join(PROJECT_ROOT, "cfram_output")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.config import load_case, defaults, get_plev, get_aerosol_map, get_nproc, \
+    get_fortran_dir, get_lookup_dir, PROJECT_ROOT
+from core.constants import NBND_LW, NBND_SW
 
-CASES = {
-    'eh13': 'case_eh13_c20250102',
-    'eh22': 'case_eh22_c20250118',
-}
+FORTRAN_PLEV = get_plev()
+NLEV = len(FORTRAN_PLEV)
+SCON = defaults()['radiation']['scon']
+FORTRAN_EXE_DIR = get_fortran_dir()
+LOOKUP_DIR = get_lookup_dir()
 
-FORTRAN_PLEV = np.array([1.,2.,3.,5.,7.,10.,20.,30.,50.,70.,100.,125.,150.,175.,200.,
-    225.,250.,300.,350.,400.,450.,500.,550.,600.,650.,700.,750.,775.,
-    800.,825.,850.,875.,900.,925.,950.,975.,1000.])
-NLEV = 37
-NBND_LW = 16
-NBND_SW = 14
-SCON = 1360.98
-
-# Aerosol mapping
-AEROSOL_MAP = {
-    'bc':    ('opticsBands_BC.v1_3.RRTMG.nc', 'opticsBands_BC.v1_5.RRTMG.nc', 2),
-    'ocphi': ('opticsBands_OC.v1_3.RRTMG.nc', 'opticsBands_OC.v1_5.RRTMG.nc', 2),
-    'ocpho': ('opticsBands_OC.v1_3.RRTMG.nc', 'opticsBands_OC.v1_5.RRTMG.nc', 1),
-    'sulf':  ('opticsBands_SU.v1_3.RRTMG.nc', 'opticsBands_SU.v1_5.RRTMG.nc', 0.16e-6),
-    'ss':    ('opticsBands_SS.v3_5.RRTMG.nc', 'opticsBands_SS.v3_5.RRTMG.nc', 3),
-    'dust':  ('opticsBands_DU.v15_3.RRTMG.nc', 'opticsBands_DU.v15_5.RRTMG.nc', 3),
-}
+# Build aerosol map from config
+_aer_cfg = get_aerosol_map()
+AEROSOL_MAP = {k: (v['lw'], v['sw'], v['rd']) for k, v in _aer_cfg.items()}
 
 # Global data (set by initializer)
 G = {}
@@ -297,14 +283,18 @@ def init_worker(data_dict):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--case', default='eh13', choices=['eh13', 'eh22'])
-    parser.add_argument('--nproc', type=int, default=40)
+    parser.add_argument('--case', required=True, help='Case name (directory under cases/)')
+    parser.add_argument('--nproc', type=int, default=None,
+                        help='Number of workers (default: from config or all CPUs)')
     args = parser.parse_args()
 
-    case_dir = os.path.join(PAPER_BASE, CASES[args.case])
+    cfg = load_case(args.case)
+    OUTDIR = cfg['_output_dir']
     os.makedirs(OUTDIR, exist_ok=True)
+    nproc = args.nproc or get_nproc(cfg)
+    args.nproc = nproc
 
-    print("=== Python parallel CFRAM: %s, %d procs ===" % (args.case.upper(), args.nproc))
+    print("=== Python parallel CFRAM: %s, %d procs ===" % (cfg.get('case_name', args.case), nproc))
 
     # Use pre-built single-column executable (nlat=1, nlon=1)
     exe_1col = os.path.join(FORTRAN_EXE_DIR, 'cfram_rrtmg_1col')
@@ -314,12 +304,11 @@ def main():
     print("Using executable: %s" % exe_1col)
 
     # Load data
-    print("Loading paper_data...")
-    files = os.listdir(case_dir)
-    nc_bp = Dataset(os.path.join(case_dir, [f for f in files if 'baseline_pres' in f][0]))
-    nc_bs = Dataset(os.path.join(case_dir, [f for f in files if 'baseline_surf' in f][0]))
-    nc_ap = Dataset(os.path.join(case_dir, [f for f in files if 'all_pres' in f][0]))
-    nc_as = Dataset(os.path.join(case_dir, [f for f in files if 'all_surf' in f][0]))
+    print("Loading input data...")
+    nc_bp = Dataset(cfg['input']['base_pres'])
+    nc_bs = Dataset(cfg['input']['base_surf'])
+    nc_ap = Dataset(cfg['input']['perturbed_pres'])
+    nc_as = Dataset(cfg['input']['perturbed_surf'])
 
     lats = np.array(nc_bp.variables['lat'][:])
     lons = np.array(nc_bp.variables['lon'][:])
@@ -356,22 +345,24 @@ def main():
                 lut[f] = load_lookup_table(os.path.join(LOOKUP_DIR, f))
     data['lut'] = lut
 
-    # Load paper forcing for non-radiative terms (lhflx, shflx, sfcdyn)
-    print("Loading paper forcing for non-radiative terms...")
-    nc_pf = Dataset(os.path.join(case_dir, [f for f in files if 'partial_forcing' in f][0]))
-    for nonrad_term in ['lhflx', 'shflx', 'sfcdyn']:
-        # (time, lev, lat, lon) -> (nlev_paper, nlat, nlon), flip TOA->sfc
-        frc_3d = np.array(nc_pf.variables[nonrad_term][0, ::-1, :, :], dtype=np.float64)
-        # paper has 38 levels: after flip, index 0=TOA...36=1000hPa, index 37=surface(1013)
-        # Build (NLEV+1, nlat, nlon) matching our convention
-        frc_full = np.zeros((NLEV + 1, nlat, nlon))
-        frc_full[:NLEV, :, :] = frc_3d[:NLEV, :, :]
-        # Surface = original index 0 (before flip = last after flip = index 37)
-        frc_full[NLEV, :, :] = np.array(nc_pf.variables[nonrad_term][0, 0, :, :], dtype=np.float64)
-        frc_full = np.where(np.abs(frc_full) > 900, 0.0, frc_full)
-        data['frc_' + nonrad_term] = frc_full
-        print("  frc_%s: sfc mean=%.3f W/m2" % (nonrad_term, np.nanmean(frc_full[NLEV])))
-    nc_pf.close()
+    # Load non-radiative forcing (optional)
+    nonrad_path = cfg['input'].get('nonrad_forcing')
+    if nonrad_path and os.path.exists(nonrad_path):
+        print("Loading non-radiative forcing...")
+        nc_pf = Dataset(nonrad_path)
+        for nonrad_term in ['lhflx', 'shflx', 'sfcdyn']:
+            if nonrad_term not in nc_pf.variables:
+                continue
+            frc_3d = np.array(nc_pf.variables[nonrad_term][0, ::-1, :, :], dtype=np.float64)
+            frc_full = np.zeros((NLEV + 1, nlat, nlon))
+            frc_full[:NLEV, :, :] = frc_3d[:NLEV, :, :]
+            frc_full[NLEV, :, :] = np.array(nc_pf.variables[nonrad_term][0, 0, :, :], dtype=np.float64)
+            frc_full = np.where(np.abs(frc_full) > 900, 0.0, frc_full)
+            data['frc_' + nonrad_term] = frc_full
+            print("  frc_%s: sfc mean=%.3f W/m2" % (nonrad_term, np.nanmean(frc_full[NLEV])))
+        nc_pf.close()
+    else:
+        print("No non-radiative forcing provided (radiative decomposition only)")
 
     print("Grid: %d x %d = %d points" % (nlat, nlon, nlat * nlon))
 
@@ -410,7 +401,7 @@ def main():
     print("Completed in %.1f seconds (%.1f pts/s)" % (elapsed, len(tasks) / elapsed))
 
     # Save as NetCDF
-    outfile = os.path.join(OUTDIR, 'cfram_%s_python.nc' % args.case)
+    outfile = os.path.join(OUTDIR, 'cfram_result.nc')
     nc = Dataset(outfile, 'w')
     nc.createDimension('lev', NLEV + 1)
     nc.createDimension('lat', nlat)
@@ -428,10 +419,10 @@ def main():
         v[:] = frc_out[t]
 
     # Compute and save observed dT and dynamics residual
-    nc_bp2 = Dataset(os.path.join(case_dir, [f for f in os.listdir(case_dir) if 'baseline_pres' in f][0]))
-    nc_ap2 = Dataset(os.path.join(case_dir, [f for f in os.listdir(case_dir) if 'all_pres' in f][0]))
-    nc_bs2 = Dataset(os.path.join(case_dir, [f for f in os.listdir(case_dir) if 'baseline_surf' in f][0]))
-    nc_as2 = Dataset(os.path.join(case_dir, [f for f in os.listdir(case_dir) if 'all_surf' in f][0]))
+    nc_bp2 = Dataset(cfg['input']['base_pres'])
+    nc_ap2 = Dataset(cfg['input']['perturbed_pres'])
+    nc_bs2 = Dataset(cfg['input']['base_surf'])
+    nc_as2 = Dataset(cfg['input']['perturbed_surf'])
     dT_obs = np.zeros((NLEV + 1, nlat, nlon))
     dT_obs[:NLEV] = np.array(nc_ap2.variables['ta_lay'][0, ::-1, :, :], dtype=np.float64) - \
                      np.array(nc_bp2.variables['ta_lay'][0, ::-1, :, :], dtype=np.float64)
