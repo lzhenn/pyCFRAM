@@ -29,22 +29,23 @@ Python (decomposition + analysis)
 
 ## Setup
 
-### 1. Clone
+### 1. Clone and install dependencies
 
 ```bash
 git clone git@github.com:lzhenn/pyCFRAM.git
 cd pyCFRAM
+pip install -r requirements.txt
 ```
 
 ### 2. Compile Fortran RRTMG
 
 ```bash
 cd fortran
-make
+make          # builds cfram_rrtmg (full-field) and cfram_rrtmg_1col (single-column)
 cd ..
 ```
 
-This builds the `cfram_rrtmg` executable. The RRTMG lookup tables (`rrtmg_lw.nc`, `rrtmg_sw.nc`) are tracked via git-lfs and must be present after clone.
+The single-column executable `cfram_rrtmg_1col` is used by the parallel Python runner. The RRTMG lookup tables (`rrtmg_lw.nc`, `rrtmg_sw.nc`) are included in the repository.
 
 ### 3. Obtain paper_data
 
@@ -118,12 +119,17 @@ pyCFRAM/
 
 | Script | Purpose |
 |--------|---------|
-| `extract_full_field.py` | Paper_data NetCDF → Fortran binary input |
+| `run_case.py` | Unified entry point: extract → run → plot |
+| `prepare_from_paper_data.py` | Convert paper_data to standard input format |
+| `extract_full_field.py` | Input NetCDF → Fortran binary (aerosol optics) |
 | `run_parallel_python.py` | Parallel CFRAM decomposition (multiprocessing) |
 | `plot_fig3_self.py` | Fig.3: 6-row spatial decomposition maps |
 | `plot_fig3.py` | Fig.3 directly from paper_data (validation) |
 | `plot_fig4.py` | Fig.4: PAP bar charts |
-| `extract_paper_data_column.py` | Single-column extraction for debugging |
+
+## Input Data Format
+
+See [docs/input_spec.md](docs/input_spec.md) for the standard NetCDF input format. pyCFRAM takes any two atmospheric states (base, perturbed) — it does not prescribe how they are defined.
 
 ## Reference
 

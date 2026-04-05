@@ -246,6 +246,13 @@ OBMPTH = $(CDOTO)/$(MPRK_LW).o \
 $(OUTPUT) : \
 	makedir $(OBMPTH) $(OBJPTH)
 	$(FC) $(FCOPTS) -I$(CDOTO) -o $(OUTPUT) $(OBMPTH) $(OBJPTH) /usr/lib64/liblapack.so.3 /usr/lib64/libblas.so.3
+	@echo "Building single-column version (cfram_rrtmg_1col)..."
+	@sed 's/nlat=81,nlon=121/nlat=1,nlon=1/' cfram_rrtmg.f90 | grep -v '!\$$OMP' > cfram_rrtmg_1col.f90
+	$(FC) $(FCOPTS) -I$(CDOTO) -o cfram_rrtmg_1col cfram_rrtmg_1col.f90 \
+		$(shell echo $(OBMPTH) $(OBJPTH) | tr ' ' '\n' | grep -v cfram_rrtmg.o | tr '\n' ' ') \
+		/usr/lib64/liblapack.so.3 /usr/lib64/libblas.so.3
+	@rm -f cfram_rrtmg_1col.f90
+	@echo "Built: cfram_rrtmg and cfram_rrtmg_1col"
 
 
 #################
