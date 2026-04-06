@@ -15,7 +15,7 @@ VERSION = v5.00
 ##################################
 
 FC = ifort
-   FCOPTS = -r8 -i8 -ftz -g -traceback -fp-model precise
+   FCOPTS = -r8 -i8 -ftz -g -traceback -fp-model precise -assume byterecl
 # Compile absorption coefficient data without optimization
    FCOPTK = -O0 -r8 -i8
 
@@ -24,7 +24,7 @@ FC = ifort
 #################
 
 # OUTPUT = rrtmg_lw_$(VERSION)_$(PLATFORM)
-OUTPUT = cfram_rrtmg
+OUTPUT = cfram_rrtmg_1col
 
 ###########################################
 # Source, module and object names and paths

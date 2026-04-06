@@ -8,7 +8,7 @@
 
     implicit none
 
-    integer(kind=im),parameter :: nlat=81,nlon=121,nlev=37,ntime=1
+    integer(kind=im),parameter :: nlat=1,nlon=1,nlev=37,ntime=1
     integer(kind=im),parameter :: icld=2   ! 0-no cloud, 2-cloud
     integer(kind=im),parameter :: iaer=10   ! 0-no aerosol, 10-aerosol
     real(kind=rb),   parameter :: scon=1360.98 ! solar constant

@@ -24,7 +24,7 @@ FC = gfortran
 #################
 
 # OUTPUT = rrtmg_lw_$(VERSION)_$(PLATFORM)
-OUTPUT = cfram_rrtmg
+OUTPUT = cfram_rrtmg_1col
 
 ###########################################
 # Source, module and object names and paths
