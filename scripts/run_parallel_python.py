@@ -207,7 +207,8 @@ def process_column(args):
     # Read output: forcing + drdt_inv, solve dT in Python
     result = {}
     rad_terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm']
-    nonrad_terms = ['lhflx', 'shflx', 'sfcdyn']
+    nonrad_terms = ['lhflx', 'shflx']
+    dyn_terms = ['atmdyn', 'sfcdyn', 'ocndyn']
     aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']
 
     if ret == 0:
@@ -258,20 +259,38 @@ def process_column(args):
             for t in rad_terms:
                 result['dT_'+t] = solve_dT(result['frc_'+t])
 
-            # Non-radiative + per-species aerosol terms: forcing from paper_data
-            extra_terms = nonrad_terms + aer_species_terms
-            for t in extra_terms:
+            # Dynamic terms derived from energy conservation: F_dyn = -F_rad (= -frc_warm)
+            frc_warm_col = result['frc_warm']
+
+            # Atmospheric dynamics: F_atmdyn[atm] = -frc_warm[atm], surface = 0
+            frc_atmdyn = np.zeros(NLEV + 1)
+            frc_atmdyn[:nl] = -frc_warm_col[:nl]
+            result['dT_atmdyn'] = solve_dT(frc_atmdyn)
+
+            # Surface dynamics total: F_sfcdyn[sfc] = -frc_warm[sfc], atm = 0
+            frc_sfcdyn = np.zeros(NLEV + 1)
+            frc_sfcdyn[NLEV] = -frc_warm_col[NLEV]
+            result['dT_sfcdyn'] = solve_dT(frc_sfcdyn)
+
+            # Ocean circulation: F_ocndyn[sfc] = F_sfcdyn[sfc] - F_lhflx[sfc] - F_shflx[sfc]
+            lhflx_sfc = d['frc_lhflx'][NLEV, ilat, ilon] if 'frc_lhflx' in d else 0.0
+            shflx_sfc = d['frc_shflx'][NLEV, ilat, ilon] if 'frc_shflx' in d else 0.0
+            frc_ocndyn = np.zeros(NLEV + 1)
+            frc_ocndyn[NLEV] = frc_sfcdyn[NLEV] - lhflx_sfc - shflx_sfc
+            result['dT_ocndyn'] = solve_dT(frc_ocndyn)
+
+            # lhflx, shflx + per-species aerosol: forcing from paper_data
+            for t in nonrad_terms + aer_species_terms:
                 if 'frc_' + t in d:
-                    frc_full = d['frc_' + t][:, ilat, ilon]
-                    result['dT_' + t] = solve_dT(frc_full)
+                    result['dT_' + t] = solve_dT(d['frc_' + t][:, ilat, ilon])
         else:
-            for t in rad_terms + nonrad_terms + aer_species_terms:
+            for t in rad_terms + dyn_terms + nonrad_terms + aer_species_terms:
                 result['dT_'+t] = np.full(NLEV+1, np.nan)
     else:
         for t in rad_terms:
             result['frc_'+t] = np.full(NLEV+1, np.nan)
             result['dT_'+t] = np.full(NLEV+1, np.nan)
-        for t in nonrad_terms + aer_species_terms:
+        for t in dyn_terms + nonrad_terms + aer_species_terms:
             result['dT_'+t] = np.full(NLEV+1, np.nan)
 
     shutil.rmtree(tmpdir)
@@ -352,7 +371,7 @@ def main():
     if nonrad_path and os.path.exists(nonrad_path):
         print("Loading non-radiative forcing...")
         nc_pf = Dataset(nonrad_path)
-        for nonrad_term in ['lhflx', 'shflx', 'sfcdyn']:
+        for nonrad_term in ['lhflx', 'shflx']:
             if nonrad_term not in nc_pf.variables:
                 continue
             frc_3d = np.array(nc_pf.variables[nonrad_term][0, ::-1, :, :], dtype=np.float64)
@@ -389,9 +408,10 @@ def main():
 
     # Result arrays
     terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm']
-    nonrad_terms = ['lhflx', 'shflx', 'sfcdyn']
+    nonrad_terms = ['lhflx', 'shflx']
+    dyn_terms = ['atmdyn', 'sfcdyn', 'ocndyn']
     aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']
-    all_dT_terms = terms + nonrad_terms + aer_species_terms
+    all_dT_terms = terms + dyn_terms + nonrad_terms + aer_species_terms
     dT_out = {t: np.full((NLEV+1, nlat, nlon), np.nan) for t in all_dT_terms}
     frc_out = {t: np.full((NLEV+1, nlat, nlon), np.nan) for t in terms}
 
@@ -401,7 +421,7 @@ def main():
             for t in terms:
                 dT_out[t][:, ilat, ilon] = result['dT_'+t]
                 frc_out[t][:, ilat, ilon] = result['frc_'+t]
-            for t in nonrad_terms + aer_species_terms:
+            for t in dyn_terms + nonrad_terms + aer_species_terms:
                 if 'dT_'+t in result:
                     dT_out[t][:, ilat, ilon] = result['dT_'+t]
             done += 1
@@ -446,21 +466,6 @@ def main():
 
     v = nc.createVariable('dT_observed', 'f8', ('lev', 'lat', 'lon'))
     v[:] = dT_obs
-
-    # atmdyn = observed - 7 radiative - sfcdyn - lhflx - shflx
-    rad7 = np.zeros((NLEV + 1, nlat, nlon))
-    for t in ['co2', 'q', 'o3', 'solar', 'albedo', 'cloud', 'aerosol']:
-        arr = dT_out[t].copy()
-        arr[np.isnan(arr) | (np.abs(arr) > 900)] = 0.0
-        rad7 += arr
-    nonrad_sum = np.zeros((NLEV + 1, nlat, nlon))
-    for t in ['sfcdyn', 'lhflx', 'shflx']:
-        arr = dT_out[t].copy()
-        arr[np.isnan(arr) | (np.abs(arr) > 900)] = 0.0
-        nonrad_sum += arr
-    dT_atmdyn = dT_obs - rad7 - nonrad_sum
-    v = nc.createVariable('dT_atmdyn', 'f8', ('lev', 'lat', 'lon'))
-    v[:] = dT_atmdyn
 
     nc.close()
     print("Saved: %s" % outfile)
