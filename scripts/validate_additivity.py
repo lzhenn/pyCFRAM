@@ -34,7 +34,12 @@ FORTRAN_PLEV = get_plev()
 NLEV = len(FORTRAN_PLEV)
 
 # Primary additive terms (radiative + top-level dynamic)
-RAD_TERMS = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol']
+# NOTE: 'ts' (surface skin temperature LW re-emission) is EXCLUDED from the sum.
+# dT_ts represents the radiative forcing of ΔTs on the atmosphere, which is already
+# embedded in the Planck matrix (∂R/∂T includes the surface layer). Including it
+# would double-count the surface LW feedback. Wu et al. (2025) correctly excludes
+# this term from their 10-term decomposition.
+RAD_TERMS = ['co2', 'q', 'o3', 'solar', 'albedo', 'cloud', 'aerosol']
 DYN_TERMS = ['atmdyn', 'sfcdyn']
 ALL_TERMS = RAD_TERMS + DYN_TERMS
 
@@ -57,6 +62,8 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--case', required=True, help='Case name (e.g. eh13)')
     parser.add_argument('--plot', action='store_true', help='Save diagnostic plots')
+    parser.add_argument('--roi', action='store_true',
+                        help='Restrict statistics to key_region defined in case.yaml')
     args = parser.parse_args()
 
     cfg = load_case(args.case)
@@ -82,26 +89,15 @@ def main():
             dT[t] = data
 
     # Determine correct sum: avoid double-counting.
-    # If both 'sfcdyn' and 'lhflx'/'shflx' exist, check if sfcdyn already
-    # includes lhflx+shflx (new code) or not (old code).
-    # Heuristic: if sfcdyn surface mean ≈ -(frc_warm_sfc), it's new code
-    # (new code: sfcdyn = total surface dyn = ocndyn+lhflx+shflx)
-    # Old code: sfcdyn, lhflx, shflx are independent → must sum all three.
-    if 'sfcdyn' in dT and 'lhflx' in dT:
-        # Check by computing sfcdyn - (lhflx+shflx) surface residual
-        sfcdyn_sfc = np.nanmean(dT['sfcdyn'][-1])
-        lhflx_sfc  = np.nanmean(dT.get('lhflx', np.zeros_like(dT['sfcdyn']))[-1])
-        shflx_sfc  = np.nanmean(dT.get('shflx', np.zeros_like(dT['sfcdyn']))[-1])
-        # In new code sfcdyn >> lhflx+shflx (sfcdyn includes them);
-        # in old code sfcdyn ≈ some independent term (usually small)
-        if abs(sfcdyn_sfc) > 2 * abs(lhflx_sfc + shflx_sfc):
-            # New code: sfcdyn already contains lhflx+shflx — only sum sfcdyn
-            SUM_TERMS = RAD_TERMS + ['atmdyn', 'sfcdyn']
-            print('Detected: new forcing-based output (sfcdyn includes lhflx+shflx)')
-        else:
-            # Old code: sum all three independently
-            SUM_TERMS = RAD_TERMS + ['atmdyn', 'sfcdyn', 'lhflx', 'shflx']
-            print('Detected: old residual-based output (sfcdyn+lhflx+shflx separate)')
+    # New code (forcing-based, commit a959143+): outputs dT_ocndyn, and
+    #   sfcdyn = ocndyn + lhflx + shflx  → sum only sfcdyn (not lhflx/shflx)
+    # Old code (residual-based): no dT_ocndyn, sfcdyn/lhflx/shflx independent
+    #   → must sum all three.
+    # Detection: presence of dT_ocndyn is the definitive indicator.
+    has_ocndyn = load_nc(outfile, 'dT_ocndyn') is not None
+    if 'sfcdyn' in dT and has_ocndyn:
+        SUM_TERMS = RAD_TERMS + ['atmdyn', 'sfcdyn']
+        print('Detected: new forcing-based output (sfcdyn includes lhflx+shflx)')
     else:
         SUM_TERMS = [t for t in CANDIDATE_TERMS if t in dT]
         print(f'Using available terms: {SUM_TERMS}')
@@ -132,13 +128,56 @@ def main():
     valid = (np.abs(dT['observed']) < 900) & (np.abs(dT_sum) < 900)
     residual_valid = np.where(valid, residual, np.nan)
 
+    # ── ROI mask (optional) ───────────────────────────────────────────────────
+    roi_mask = None
+    roi_label = 'full domain'
+    if args.roi:
+        kr = cfg.get('plot', {}).get('key_region', None)
+        if kr is None:
+            print('WARNING: --roi specified but no key_region in case.yaml; using full domain.')
+        else:
+            # Read lat/lon from input file
+            input_file = cfg['input'].get('base_pres')
+            nc_in = Dataset(input_file, 'r')
+            lat = np.array(nc_in.variables['lat'][:])
+            lon = np.array(nc_in.variables['lon'][:])
+            nc_in.close()
+            lat_min, lat_max = kr['lat']
+            lon_min, lon_max = kr['lon']
+            lat_idx = np.where((lat >= lat_min) & (lat <= lat_max))[0]
+            lon_idx = np.where((lon >= lon_min) & (lon <= lon_max))[0]
+            # Build 2D spatial mask broadcastable to (nlev, nlat, nlon)
+            roi_2d = np.zeros((len(lat), len(lon)), dtype=bool)
+            roi_2d[np.ix_(lat_idx, lon_idx)] = True
+            roi_mask = roi_2d[np.newaxis, :, :]  # (1, nlat, nlon)
+            roi_label = (f'ROI {lat_min}–{lat_max}°N, {lon_min}–{lon_max}°E '
+                         f'({len(lat_idx)}×{len(lon_idx)} pts)')
+            residual_valid = np.where(roi_mask, residual_valid, np.nan)
+            print(f'ROI mask applied: {roi_label}')
+
     # ── Statistics ────────────────────────────────────────────────────────────
-    max_abs = np.nanmax(np.abs(residual_valid))
+    max_abs  = np.nanmax(np.abs(residual_valid))
     mean_abs = np.nanmean(np.abs(residual_valid))
-    p95 = np.nanpercentile(np.abs(residual_valid), 95)
-    p99 = np.nanpercentile(np.abs(residual_valid), 99)
+    p95      = np.nanpercentile(np.abs(residual_valid), 95)
+    p99      = np.nanpercentile(np.abs(residual_valid), 99)
+
+    # Wu et al. style: signed domain-mean of sum and obs (surface level only)
+    sfc_idx = residual_valid.shape[0] - 1   # last level = surface in file
+    sum_sfc_mean = np.nanmean(np.where(
+        valid[sfc_idx] & (roi_mask[0] if roi_mask is not None else True),
+        dT_sum[sfc_idx], np.nan))
+    obs_sfc_mean = np.nanmean(np.where(
+        valid[sfc_idx] & (roi_mask[0] if roi_mask is not None else True),
+        dT['observed'][sfc_idx], np.nan))
+    signed_res   = sum_sfc_mean - obs_sfc_mean
 
     print(f'\nAdditivity residual  (sum({", ".join(available)}) - dT_observed)')
+    print(f'  Region          : {roi_label}')
+    print(f'  --- Wu et al. style (surface, signed domain-mean) ---')
+    print(f'  Sum  (sfc mean) : {sum_sfc_mean:+.4f} K')
+    print(f'  Obs  (sfc mean) : {obs_sfc_mean:+.4f} K')
+    print(f'  Signed residual : {signed_res:+.4f} K')
+    print(f'  --- Full-column absolute stats ---')
     print(f'  max |residual|  : {max_abs:.4f} K')
     print(f'  mean|residual|  : {mean_abs:.4f} K')
     print(f'  P95 |residual|  : {p95:.4f} K')
