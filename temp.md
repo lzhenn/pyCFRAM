@@ -122,3 +122,41 @@ NL(q, cloud) = F(q+cloud) - F(q) - F(cloud) + F(base)
 ### 建议执行顺序
 
 先做**层次 1+2**（纯后处理，当天可完成），给出初步答案。如果结果指向特定物理机制（比如云×水汽主导），再有针对性地做层次 3 的单对实验（只需重算 1-2 次，不必做全部 28 对）。
+
+---
+
+## 三、Planck 矩阵与 Lu & Cai (2009) 的符号约定差异
+
+### 问题
+
+Lu & Cai (2009, *Clim. Dyn.*) Fig. 1 展示的 Planck 矩阵对角线为**正值**（红色），而 pyCFRAM 的 `validate_planck.py` 验证图（右图 drdt 对角线）全为**负值**，且左图展示的是 drdt_inv 而非 drdt 本身。两者的差异有两个来源：
+
+### 差异 1：展示的是不同矩阵
+
+| | Lu & Cai Fig.1 | pyCFRAM 左图 |
+|---|---|---|
+| 矩阵 | $\partial R / \partial T$（正向 Planck 矩阵） | $(\partial R / \partial T)^{-1}$（Fortran 输出的逆矩阵）|
+
+pyCFRAM 的 Fortran 直接输出逆矩阵 `drdt_inv.dat`，因此验证图左侧展示的是逆矩阵结构（主对角线深蓝、层间耦合随距离衰减），右图单独绘制正向矩阵对角线以便做物理检查。
+
+### 差异 2：R 的符号约定相反
+
+**Lu & Cai 定义**：$R_m$ = 第 $m$ 层净红外辐射**散度**（离开该层，即冷却率），单位 W m⁻²。因此：
+
+$$\frac{\partial R_i}{\partial T_i} > 0 \quad \text{（升温 → 冷却率增大）}$$
+
+对角线为正（论文 Fig.1 暖色）。
+
+**pyCFRAM Fortran 定义**：R 为净辐射**辐合**（convergence，加热），符号相反：
+
+$$\frac{\partial R_i}{\partial T_i} < 0 \quad \text{（升温 → 净加热减小）}$$
+
+对角线为负（我们右图全负），故求解公式带负号：
+
+$$\Delta T = -\left(\frac{\partial R}{\partial T}\right)^{-1} \cdot F$$
+
+对应 Lu & Cai 原式 $\Delta T = (\partial R / \partial T)^{-1} \cdot \Delta F$，两者等价，物理一致。
+
+### 验证结论
+
+pyCFRAM 的物理检查是：**对角线全负**（对应 Lu & Cai 约定下的全正），round-trip 精度 1.11e-15，条件数 κ = 137——三项均 PASS，矩阵物理正确，符号约定差异不影响计算正确性。
