@@ -2,6 +2,28 @@
 case_name: EH13
 description: "East China extreme heat event, Aug 5-17, 2013"
 
+source:
+  type: era5_daily
+  data_dir: era5_data/daily
+  temporal:
+    event_year: 2013
+    event_month: 8
+    clim_years: [2003, 2022]
+    warm_days: [4,5,6,7,8,9,10,11,12,13,14,15,16]
+    warm_detect:
+      threshold_pct: 90
+      min_consecutive: 3
+      detect_region:
+        lat: [28, 36]
+        lon: [110, 122]
+  co2:
+    source: constant
+    base_ppmv: 395.54
+    perturbed_ppmv: 396.14
+  aerosol:
+    source: merra2
+    data_dir: era5_data/merra2
+
 input:
   base_pres: input/base_pres.nc
   base_surf: input/base_surf.nc

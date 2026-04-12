@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Build standard CFRAM input NetCDF files from reanalysis data.
+
+Reads case.yaml 'source' configuration and generates:
+    cases/<case>/input/base_pres.nc
+    cases/<case>/input/base_surf.nc
+    cases/<case>/input/perturbed_pres.nc
+    cases/<case>/input/perturbed_surf.nc
+
+Usage:
+    python scripts/build_case_input.py --case eh22
+    python scripts/build_case_input.py --case eh22 --dry-run
+"""
+
+import os, sys, argparse
+import numpy as np
+from netCDF4 import Dataset
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.config import load_case
+
+# Variable classification: which go into pres vs surf files
+PRES_3D_VARS = ['ta_lay', 'q', 'o3', 'camt', 'cliq', 'cice', 'co2',
+                'bc', 'ocphi', 'ocpho', 'sulf', 'ss', 'dust']
+SURF_2D_VARS = ['ts', 'ps', 'solar', 'albedo']
+
+# Units metadata
+VAR_UNITS = {
+    'ta_lay': 'K', 'q': 'kg/kg', 'o3': 'kg/kg',
+    'camt': '1', 'cliq': 'kg/kg', 'cice': 'kg/kg',
+    'co2': 'mol/mol',
+    'bc': 'kg/kg', 'ocphi': 'kg/kg', 'ocpho': 'kg/kg',
+    'sulf': 'kg/kg', 'ss': 'kg/kg', 'dust': 'kg/kg',
+    'ts': 'K', 'ps': 'Pa', 'solar': 'W/m2', 'albedo': '1',
+}
+
+VAR_LONG_NAMES = {
+    'ta_lay': 'Layer-mean temperature',
+    'q': 'Specific humidity',
+    'o3': 'Ozone mass mixing ratio',
+    'camt': 'Cloud fraction',
+    'cliq': 'Cloud liquid water content',
+    'cice': 'Cloud ice water content',
+    'co2': 'CO2 volume mixing ratio',
+    'bc': 'Black carbon mixing ratio',
+    'ocphi': 'Hydrophilic organic carbon',
+    'ocpho': 'Hydrophobic organic carbon',
+    'sulf': 'Sulfate mixing ratio',
+    'ss': 'Sea salt mixing ratio',
+    'dust': 'Dust mixing ratio',
+    'ts': 'Skin temperature',
+    'ps': 'Surface pressure',
+    'solar': 'TOA incident solar radiation',
+    'albedo': 'Surface albedo',
+}
+
+
+def write_pres_nc(filepath, state):
+    """Write pressure-level variables to NetCDF."""
+    lat = state['lat']
+    lon = state['lon']
+    lev = state['lev']
+
+    nc = Dataset(filepath, 'w', format='NETCDF4')
+    nc.createDimension('time', 1)
+    nc.createDimension('lev', len(lev))
+    nc.createDimension('lat', len(lat))
+    nc.createDimension('lon', len(lon))
+
+    # Coordinate variables
+    v = nc.createVariable('time', 'f8', ('time',))
+    v[:] = [0]
+    v.units = 'days since 2000-01-01'
+
+    v = nc.createVariable('lev', 'f8', ('lev',))
+    v[:] = lev
+    v.units = 'hPa'
+    v.long_name = 'Pressure level'
+    v.positive = 'down'
+
+    v = nc.createVariable('lat', 'f8', ('lat',))
+    v[:] = lat
+    v.units = 'degrees_north'
+
+    v = nc.createVariable('lon', 'f8', ('lon',))
+    v[:] = lon
+    v.units = 'degrees_east'
+
+    # Data variables
+    for varname in PRES_3D_VARS:
+        if varname not in state:
+            print(f"  Warning: {varname} not in state, filling with zeros")
+            data = np.zeros((len(lev), len(lat), len(lon)), dtype=np.float64)
+        else:
+            data = state[varname]
+        v = nc.createVariable(varname, 'f8', ('time', 'lev', 'lat', 'lon'),
+                              zlib=True, complevel=4)
+        v[0, :, :, :] = data
+        v.units = VAR_UNITS.get(varname, '')
+        v.long_name = VAR_LONG_NAMES.get(varname, varname)
+
+    nc.close()
+    fsize = os.path.getsize(filepath) / 1e6
+    print(f"  Wrote {filepath} ({fsize:.1f} MB)")
+
+
+def write_surf_nc(filepath, state):
+    """Write surface variables to NetCDF."""
+    lat = state['lat']
+    lon = state['lon']
+
+    nc = Dataset(filepath, 'w', format='NETCDF4')
+    nc.createDimension('time', 1)
+    nc.createDimension('lat', len(lat))
+    nc.createDimension('lon', len(lon))
+
+    v = nc.createVariable('time', 'f8', ('time',))
+    v[:] = [0]
+    v.units = 'days since 2000-01-01'
+
+    v = nc.createVariable('lat', 'f8', ('lat',))
+    v[:] = lat
+    v.units = 'degrees_north'
+
+    v = nc.createVariable('lon', 'f8', ('lon',))
+    v[:] = lon
+    v.units = 'degrees_east'
+
+    for varname in SURF_2D_VARS:
+        if varname not in state:
+            print(f"  Warning: {varname} not in state, filling with zeros")
+            data = np.zeros((len(lat), len(lon)), dtype=np.float64)
+        else:
+            data = state[varname]
+        v = nc.createVariable(varname, 'f8', ('time', 'lat', 'lon'),
+                              zlib=True, complevel=4)
+        v[0, :, :] = data
+        v.units = VAR_UNITS.get(varname, '')
+        v.long_name = VAR_LONG_NAMES.get(varname, varname)
+
+    nc.close()
+    fsize = os.path.getsize(filepath) / 1e6
+    print(f"  Wrote {filepath} ({fsize:.1f} MB)")
+
+
+def write_nonrad_nc(filepath, state, nonrad):
+    """Write non-radiative forcing to NetCDF.
+
+    Format matches paper_data partial_forcing.nc convention:
+      dims: (time=1, lev=38, lat, lon)
+      lev[0]=1013 (surface), lev[1:37]=1000→1 (atm levels, surface→TOA)
+      Only surface level (lev[0]) has real values; atm levels are fill (-999).
+    """
+    lat = state['lat']
+    lon = state['lon']
+    lev = state['lev']  # surface→TOA in hPa
+    # Build the 38-level axis: [1013, lev[0], lev[1], ..., lev[-1]]
+    lev_out = np.concatenate([[1013.0], lev])
+    nlev_out = len(lev_out)
+
+    FILL = -999.0
+
+    nc = Dataset(filepath, 'w', format='NETCDF4')
+    nc.createDimension('time', 1)
+    nc.createDimension('lev', nlev_out)
+    nc.createDimension('lat', len(lat))
+    nc.createDimension('lon', len(lon))
+
+    v = nc.createVariable('time', 'f8', ('time',)); v[:] = [0]
+    v = nc.createVariable('lev', 'f8', ('lev',)); v[:] = lev_out
+    v.units = 'hPa'
+    v = nc.createVariable('lat', 'f8', ('lat',)); v[:] = lat
+    v.units = 'degrees_north'
+    v = nc.createVariable('lon', 'f8', ('lon',)); v[:] = lon
+    v.units = 'degrees_east'
+
+    for varname in ('lhflx', 'shflx'):
+        if varname not in nonrad:
+            continue
+        data_4d = np.full((1, nlev_out, len(lat), len(lon)), FILL, dtype=np.float64)
+        # Surface value at lev[0]=1013
+        data_4d[0, 0, :, :] = nonrad[varname]
+        v = nc.createVariable(varname, 'f8', ('time', 'lev', 'lat', 'lon'),
+                              zlib=True, complevel=4)
+        v[:] = data_4d
+        v.units = 'W/m2'
+        print(f"  {varname}: sfc mean={nonrad[varname].mean():.3f} W/m2")
+
+    nc.close()
+    fsize = os.path.getsize(filepath) / 1e6
+    print(f"  Wrote {filepath} ({fsize:.1f} MB)")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--case', required=True, help='Case name (e.g. eh22)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='Only show warm period detection, do not write files')
+    args = parser.parse_args()
+
+    cfg = load_case(args.case)
+
+    if 'source' not in cfg:
+        print(f"ERROR: No 'source' section in cases/{args.case}/case.yaml")
+        print("Add a source configuration. See docs/input_spec.md.")
+        sys.exit(1)
+
+    print(f"=== Building CFRAM input for case: {args.case} ===")
+    print(f"Source type: {cfg['source']['type']}")
+
+    # Import data sources (triggers registration)
+    import data.era5_source  # noqa: F401
+
+    from data.source_base import get_source
+    source = get_source(cfg)
+
+    if args.dry_run:
+        print("\n[DRY RUN] Would build states but not write files.")
+        # Still run build_states to show warm period info
+        base, pert, nonrad = source.build_states()
+        print("\nDry run complete. No files written.")
+        return
+
+    base_state, pert_state, nonrad = source.build_states()
+
+    # Write output files — remove any existing symlinks first
+    input_dir = os.path.join(cfg['_case_dir'], 'input')
+    os.makedirs(input_dir, exist_ok=True)
+    for fn in ['base_pres.nc', 'base_surf.nc', 'perturbed_pres.nc',
+               'perturbed_surf.nc', 'nonrad_forcing.nc']:
+        fpath = os.path.join(input_dir, fn)
+        if os.path.islink(fpath):
+            os.remove(fpath)
+            print(f"  Removed symlink: {fpath}")
+
+    print(f"\nWriting NetCDF files to {input_dir}/")
+    write_pres_nc(os.path.join(input_dir, 'base_pres.nc'), base_state)
+    write_surf_nc(os.path.join(input_dir, 'base_surf.nc'), base_state)
+    write_pres_nc(os.path.join(input_dir, 'perturbed_pres.nc'), pert_state)
+    write_surf_nc(os.path.join(input_dir, 'perturbed_surf.nc'), pert_state)
+
+    # Write non-radiative forcing if available
+    if nonrad:
+        write_nonrad_nc(os.path.join(input_dir, 'nonrad_forcing.nc'),
+                        base_state, nonrad)
+
+    print(f"\n=== Done. Input files ready in cases/{args.case}/input/ ===")
+
+
+if __name__ == '__main__':
+    main()

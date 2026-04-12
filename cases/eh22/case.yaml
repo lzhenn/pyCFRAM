@@ -2,6 +2,29 @@
 case_name: EH22
 description: "East China extreme heat event, Aug 3-24, 2022"
 
+source:
+  type: era5_daily
+  data_dir: era5_data/daily
+  temporal:
+    event_year: 2022
+    event_month: 8
+    clim_years: [2003, 2022]
+    # Manual warm days matching Wu et al. paper: Aug 3-24 (0-indexed)
+    warm_days: [2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+    warm_detect:
+      threshold_pct: 90
+      min_consecutive: 3
+      detect_region:
+        lat: [27, 35]
+        lon: [103, 122]
+  co2:
+    source: constant
+    base_ppmv: 394.23      # 2003-2022 climatological mean CO2 (Wu et al. paper)
+    perturbed_ppmv: 416.89  # 2022 warm period mean CO2 (Wu et al. paper)
+  aerosol:
+    source: merra2
+    data_dir: era5_data/merra2
+
 input:
   base_pres: input/base_pres.nc
   base_surf: input/base_surf.nc

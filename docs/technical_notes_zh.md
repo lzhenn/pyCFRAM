@@ -108,15 +108,22 @@ pyCFRAM/
 │   ├── RRTMG_LW-master/     # 上游 RRTMG 长波库（含 rrtmg_lw.nc）
 │   └── RRTMG_SW-master/     # 上游 RRTMG 短波库（含 rrtmg_sw.nc）
 ├── scripts/                 # 工作流脚本
-│   ├── prepare_from_paper_data.py  # paper_data → 标准输入格式
-│   ├── extract_full_field.py       # 输入 NetCDF → Fortran 二进制
-│   ├── run_parallel_python.py      # 并行 CFRAM 计算
-│   ├── plot_fig3_self.py           # Fig.3 温度分解空间图
-│   ├── plot_fig3.py                # Fig.3 paper_data 直出（验证）
+│   ├── build_case_input.py         # ERA5 + MERRA-2 → 标准 NetCDF 输入（case.yaml 驱动）
+│   ├── download_era5_flux.py       # ERA5 PL+SL 下载（CDS API）
+│   ├── download_merra2_aerosol.py  # MERRA-2 M2I3NVAER 下载（NASA GES DISC）
+│   ├── extract_full_field.py       # 输入 NetCDF → Fortran 二进制（含 GOCART 气溶胶光学）
+│   ├── run_parallel_python.py      # 并行 CFRAM 计算（multiprocessing）
+│   ├── plot_fig3_independent.py    # Fig.3 双列对比图（paper | independent）
+│   ├── plot_fig3_self.py           # Fig.3 温度分解空间图（基于 paper_data 复跑）
+│   ├── plot_fig3.py                # Fig.3 paper_data 直出（验证用）
 │   ├── plot_fig4.py                # Fig.4 PAP 柱状图
-│   └── plot_fig5.py                # Fig.5 气溶胶分种类
+│   ├── plot_fig5.py                # Fig.5 气溶胶分种类
+│   └── validate_vs_paper.py        # 对比 surface dT 与 Wu et al. 结果
+├── data/                    # 数据源模块
+│   ├── source_base.py              # DataSource 抽象基类 + 工厂注册器
+│   ├── era5_source.py              # ERA5DailySource：Wu et al. warm-period 方法全场版
+│   └── merra2_aerosol.py           # MERRA-2 气溶胶加载器（垂直 log-p + 水平双线性插值）
 ├── plotting/                # 可视化模块
-├── data/                    # ERA5 数据加载器
 ├── tests/                   # 单元测试
 ├── docs/                    # 文档
 │   ├── algorithm_spec.md    # 算法规格说明
@@ -156,38 +163,25 @@ cd ..
 
 ## 5. 运行流程
 
-### 5.1 使用 paper_data 复现论文结果
+### 5.1 使用 ERA5 + MERRA-2 独立驱动（标准流程）
 
-#### Step 0：获取 paper_data
+#### Step 0：获取源数据
 
-将作者提供的数据放到 `paper_data/cfram_out/` 下：
+- **ERA5 PL+SL**：`scripts/download_era5_flux.py`（需 CDS 账号）；放到 `era5_data/daily/`
+- **MERRA-2 气溶胶**：`scripts/download_merra2_aerosol.py`（需 NASA Earthdata）；放到 `era5_data/merra2/`
 
-```
-paper_data/cfram_out/
-├── case_eh13_c20250102/
-│   ├── merra2_eh13_baseline_pres_input_check.nc
-│   ├── merra2_eh13_baseline_surf_input_check.nc
-│   ├── merra2_eh13_all_pres_input_check.nc
-│   ├── merra2_eh13_all_surf_input_check.nc
-│   ├── merra2_eh13_partial_forcing.nc
-│   └── merra2_eh13_partial_t.nc
-└── case_eh22_c20250118/
-    └── (同上)
-```
+目录结构详见 README "Setup - Step 3"。
 
-#### Step 1：转换为标准输入格式
+#### Step 1：生成标准 NetCDF 输入
 
 ```bash
-python3 scripts/prepare_from_paper_data.py \
-    --paper_dir paper_data/cfram_out/case_eh13_c20250102 --case eh13
-python3 scripts/prepare_from_paper_data.py \
-    --paper_dir paper_data/cfram_out/case_eh22_c20250118 --case eh22
+python3 scripts/build_case_input.py --case eh13
+python3 scripts/build_case_input.py --case eh22
 ```
 
-该脚本在 `cases/eh13/input/` 下创建符号链接：
-- `base_pres.nc` → baseline_pres_input_check.nc
-- `perturbed_pres.nc` → all_pres_input_check.nc
-- `nonrad_forcing.nc` → partial_forcing.nc（可选，含 lhflx/shflx/sfcdyn 及气溶胶分种类 forcing）
+`build_case_input.py` 从 `cases/<case>/case.yaml` 的 `source:` 段读取配置，生成：
+- `cases/<case>/input/{base,perturbed}_{pres,surf}.nc` — state 变量
+- `cases/<case>/input/nonrad_forcing.nc` — 非辐射 forcing（lhflx, shflx）
 
 #### Step 2：一键运行
 

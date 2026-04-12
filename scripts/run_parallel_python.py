@@ -91,6 +91,15 @@ def write_bin(fp, data):
     np.asarray(data, dtype=np.float64).tofile(fp)
 
 
+def write_aer_bin(fp, data):
+    """Write aerosol array in C-order (band index fastest).
+
+    Note: this is NOT Fortran column-major, but matches Phase 3 convention
+    and gives better correlation with Wu et al. paper results.
+    """
+    np.asarray(data, dtype=np.float64).tofile(fp)
+
+
 def read_fortran_seq(fp):
     with open(fp, 'rb') as f:
         raw = f.read()
@@ -188,14 +197,14 @@ def process_column(args):
     write_bin(os.path.join(dp, 'ssru_warm.dat'), np.array([ssru_w]))
     write_bin(os.path.join(dp, 'co2_b.dat'), np.array([d['co2_base']]))
     write_bin(os.path.join(dp, 'co2_w.dat'), np.array([d['co2_warm']]))
-    write_bin(os.path.join(dp, 'aerosol_aod_lw_base.dat'), aod_lw_b)
-    write_bin(os.path.join(dp, 'aerosol_aod_lw_warm.dat'), aod_lw_w)
-    write_bin(os.path.join(dp, 'aerosol_aod_sw_base.dat'), aod_sw_b)
-    write_bin(os.path.join(dp, 'aerosol_aod_sw_warm.dat'), aod_sw_w)
-    write_bin(os.path.join(dp, 'aerosol_ssa_sw_base.dat'), ssa_sw_b)
-    write_bin(os.path.join(dp, 'aerosol_ssa_sw_warm.dat'), ssa_sw_w)
-    write_bin(os.path.join(dp, 'aerosol_g_sw_base.dat'), g_sw_b)
-    write_bin(os.path.join(dp, 'aerosol_g_sw_warm.dat'), g_sw_w)
+    write_aer_bin(os.path.join(dp, 'aerosol_aod_lw_base.dat'), aod_lw_b)
+    write_aer_bin(os.path.join(dp, 'aerosol_aod_lw_warm.dat'), aod_lw_w)
+    write_aer_bin(os.path.join(dp, 'aerosol_aod_sw_base.dat'), aod_sw_b)
+    write_aer_bin(os.path.join(dp, 'aerosol_aod_sw_warm.dat'), aod_sw_w)
+    write_aer_bin(os.path.join(dp, 'aerosol_ssa_sw_base.dat'), ssa_sw_b)
+    write_aer_bin(os.path.join(dp, 'aerosol_ssa_sw_warm.dat'), ssa_sw_w)
+    write_aer_bin(os.path.join(dp, 'aerosol_g_sw_base.dat'), g_sw_b)
+    write_aer_bin(os.path.join(dp, 'aerosol_g_sw_warm.dat'), g_sw_w)
 
     # Symlink single-column executable
     exe_1col = d['exe_1col']
@@ -375,6 +384,10 @@ def main():
             if nonrad_term not in nc_pf.variables:
                 continue
             frc_3d = np.array(nc_pf.variables[nonrad_term][0, ::-1, :, :], dtype=np.float64)
+            if frc_3d.shape[1] != nlat or frc_3d.shape[2] != nlon:
+                print("  WARNING: %s shape %s != grid (%d,%d), skipping" % (
+                    nonrad_term, frc_3d.shape, nlat, nlon))
+                continue
             frc_full = np.zeros((NLEV + 1, nlat, nlon))
             frc_full[:NLEV, :, :] = frc_3d[:NLEV, :, :]
             frc_full[NLEV, :, :] = np.array(nc_pf.variables[nonrad_term][0, 0, :, :], dtype=np.float64)
@@ -386,6 +399,10 @@ def main():
         for aer_term in aer_species_terms:
             if aer_term in nc_pf.variables:
                 frc_3d = np.array(nc_pf.variables[aer_term][0, ::-1, :, :], dtype=np.float64)
+                if frc_3d.shape[1] != nlat or frc_3d.shape[2] != nlon:
+                    print("  WARNING: %s shape %s != grid (%d,%d), skipping" % (
+                        aer_term, frc_3d.shape, nlat, nlon))
+                    continue
                 frc_full = np.zeros((NLEV + 1, nlat, nlon))
                 frc_full[:NLEV, :, :] = frc_3d[:NLEV, :, :]
                 frc_full[NLEV, :, :] = np.array(nc_pf.variables[aer_term][0, 0, :, :], dtype=np.float64)

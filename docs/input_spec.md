@@ -83,9 +83,8 @@ If provided, pyCFRAM uses the Planck matrix from RRTMG to convert these forcings
 
 These input files can be constructed from:
 
-- **ERA5 / MERRA-2 reanalysis**: Average over desired periods to create base and perturbed states
-- **CMIP6 model output**: Use historical vs. future scenarios
+- **ERA5 + MERRA-2 reanalysis** (standard): Use `scripts/build_case_input.py` driven by `case.yaml`
+- **CMIP6 model output**: Use historical vs. future scenarios (write a custom DataSource subclass)
 - **Sensitivity experiments**: Control vs. perturbed runs
-- **Author-provided paper_data**: Use `scripts/prepare_from_paper_data.py` to convert
 
 pyCFRAM does **not** prescribe how the two states are defined — any two atmospheric states can be compared.

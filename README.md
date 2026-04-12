@@ -47,35 +47,41 @@ cd ..
 
 The single-column executable `cfram_rrtmg_1col` is used by the parallel Python runner. The RRTMG lookup tables (`rrtmg_lw.nc`, `rrtmg_sw.nc`) are included in the repository.
 
-### 3. Obtain paper_data
+### 3. Obtain source data (ERA5 + MERRA-2)
 
-Download the author's validation dataset and place it under `pyCFRAM/paper_data/`:
+The standard pipeline drives CFRAM directly from ERA5 (state) and MERRA-2 (aerosol). Place these under `pyCFRAM/era5_data/`:
 
 ```
-paper_data/
-└── cfram_out/
-    ├── case_eh13_c20250102/
-    │   ├── merra2_eh13_baseline_pres_input_check.nc
-    │   ├── merra2_eh13_baseline_surf_input_check.nc
-    │   ├── merra2_eh13_all_pres_input_check.nc
-    │   ├── merra2_eh13_all_surf_input_check.nc
-    │   ├── merra2_eh13_partial_forcing.nc
-    │   ├── merra2_eh13_partial_t.nc
-    │   └── ...
-    └── case_eh22_c20250118/
-        └── (same structure)
+era5_data/
+├── daily/                                 # ERA5 daily, 2003-2022 Aug
+│   ├── era5_pl_{var}_{YYYY}08.nc          # PL: t, q, o3, cc, ciwc, clwc (6-hourly, 37 lev)
+│   └── era5_sl_{YYYY}08/                  # SL: subdirectory per month
+│       ├── *stepType-instant.nc           # skt, sp
+│       ├── *stepType-accum.nc             # ssrd, ssr, tisr, slhf, sshf
+│       └── *stepType-max.nc               # mx2t
+└── merra2/
+    └── M2I3NVAER_{YYYY}08/*.nc4           # 3-hourly, 72 model levels, 13 aerosol species
 ```
+
+Helper downloaders (CDS / NASA Earthdata credentials required):
+
+```bash
+python3 scripts/download_era5_flux.py        # ERA5 PL+SL via CDS API
+python3 scripts/download_merra2_aerosol.py   # MERRA-2 M2I3NVAER via GES DISC
+```
+
+Optional: to validate against Wu et al. results, also download `paper_data/` (not required for standard runs).
 
 ## Quickstart: Reproduce Fig.3
 
-### Step 1: Prepare case input from paper_data
+### Step 1: Build case input from ERA5 + MERRA-2
 
 ```bash
-python3 scripts/prepare_from_paper_data.py \
-    --paper_dir paper_data/cfram_out/case_eh13_c20250102 --case eh13
-python3 scripts/prepare_from_paper_data.py \
-    --paper_dir paper_data/cfram_out/case_eh22_c20250118 --case eh22
+python3 scripts/build_case_input.py --case eh13
+python3 scripts/build_case_input.py --case eh22
 ```
+
+Reads `cases/<case>/case.yaml` → generates `cases/<case>/input/{base,perturbed}_{pres,surf}.nc` and `nonrad_forcing.nc`.
 
 ### Step 2: Run CFRAM (one command per case)
 
@@ -84,20 +90,28 @@ python3 run_case.py eh13
 python3 run_case.py eh22
 ```
 
-This extracts input, runs parallel CFRAM decomposition (all CPUs by default, ~20 min/case), and plots results. Output in `cases/eh13/output/` and `cases/eh13/figures/`.
+This extracts input, runs parallel CFRAM decomposition (all CPUs by default, ~20 min/case on 80 cores), and plots results. Output in `cases/eh13/output/` and `cases/eh13/figures/`.
 
 Or run individual steps:
 
 ```bash
-python3 run_case.py eh13 --step extract   # only extract input
+python3 run_case.py eh13 --step build     # only build ERA5+MERRA-2 input
+python3 run_case.py eh13 --step extract   # only extract to Fortran binary
 python3 run_case.py eh13 --step run       # only run CFRAM
 python3 run_case.py eh13 --step plot      # only plot
 ```
 
+### Validation against Wu et al. paper_data
+
+```bash
+python3 scripts/validate_vs_paper.py eh22           # surface dT comparison
+python3 scripts/plot_fig3_independent.py eh22       # 2-column Fig.3 (paper | indep)
+```
+
 ### Adding a new case
 
-1. Create `cases/my_case/case.yaml` (see `cases/eh13/case.yaml` for template)
-2. Place input NetCDF files in `cases/my_case/input/` (see `docs/input_spec.md`)
+1. Create `cases/my_case/case.yaml` (see `cases/eh13/case.yaml` for template — includes `source:` block for ERA5/MERRA-2 driving)
+2. Run: `python3 scripts/build_case_input.py --case my_case` to generate inputs
 3. Run: `python3 run_case.py my_case`
 
 ## Project Structure
@@ -119,13 +133,17 @@ pyCFRAM/
 
 | Script | Purpose |
 |--------|---------|
-| `run_case.py` | Unified entry point: extract → run → plot |
-| `prepare_from_paper_data.py` | Convert paper_data to standard input format |
-| `extract_full_field.py` | Input NetCDF → Fortran binary (aerosol optics) |
+| `run_case.py` | Unified entry point: build → extract → run → plot |
+| `build_case_input.py` | ERA5 + MERRA-2 → standard NetCDF input (driven by case.yaml) |
+| `download_era5_flux.py` | Download ERA5 PL+SL data from Copernicus CDS |
+| `download_merra2_aerosol.py` | Download MERRA-2 M2I3NVAER from NASA GES DISC |
+| `extract_full_field.py` | Input NetCDF → Fortran binary (aerosol optics via GOCART) |
 | `run_parallel_python.py` | Parallel CFRAM decomposition (multiprocessing) |
+| `plot_fig3_independent.py` | Fig.3: 2-column (paper vs independent) spatial maps |
 | `plot_fig3_self.py` | Fig.3: 6-row spatial decomposition maps |
 | `plot_fig3.py` | Fig.3 directly from paper_data (validation) |
 | `plot_fig4.py` | Fig.4: PAP bar charts |
+| `validate_vs_paper.py` | Compare surface dT against Wu et al. results |
 
 ## Input Data Format
 
