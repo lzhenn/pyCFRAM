@@ -138,26 +138,60 @@ pyCFRAM/
 
 ### 4.1 环境要求
 
-- Python 3.8+
-- gfortran（用于编译 RRTMG）
-- LAPACK/BLAS 库（通常系统自带）
+| 组件 | 版本 / 说明 |
+|------|-------------|
+| Python | 3.8+（推荐 conda/miniconda 环境） |
+| gfortran | ≥ 9.0（编译 RRTMG） |
+| LAPACK/BLAS | 系统自带即可 |
+| GLIBC | ≥ 2.25（netCDF4 Python 包依赖；老机器如 hqlx74 不满足，需换机） |
+| 磁盘 | 代码 ~500 MB；ERA5+MERRA-2 数据约 **40 GB** |
+| 账号 | Copernicus CDS（下载 ERA5）+ NASA Earthdata（下载 MERRA-2） |
 
-### 4.2 安装步骤
+### 4.2 Python 环境准备
 
 ```bash
+# 推荐 conda
+conda create -n pycfram python=3.10 -y
+conda activate pycfram
+
+# 安装依赖
 git clone git@github.com:lzhenn/pyCFRAM.git
 cd pyCFRAM
 pip install -r requirements.txt
+```
 
-# 编译 Fortran（同时生成全场版和单柱版）
+`requirements.txt` 列出了 numpy、netCDF4、matplotlib、cartopy、scipy、pyyaml、cdsapi 等。
+
+### 4.3 账号与凭据配置
+
+本文档假设组员**已具备** CDS 与 NASA Earthdata 账号。凭据文件需放置在以下位置：
+
+**CDS（ERA5 下载）**：`~/.cdsapirc`
+```
+url: https://cds.climate.copernicus.eu/api
+key: <YOUR_UID>:<YOUR_API_KEY>
+```
+申请地址：`https://cds.climate.copernicus.eu/` → Profile → API key
+
+**NASA Earthdata（MERRA-2 下载）**：`~/.netrc`（权限 600）
+```
+machine urs.earthdata.nasa.gov login <USERNAME> password <PASSWORD>
+```
+申请地址：`https://urs.earthdata.nasa.gov/` → 注册后还需在 Profile → Applications 里批准 "NASA GESDISC DATA ARCHIVE"。
+
+### 4.4 Fortran 编译
+
+```bash
 cd fortran
-make
+make          # 同时生成 cfram_rrtmg 和 cfram_rrtmg_1col
 cd ..
 ```
 
-`make` 会自动生成两个可执行文件：
-- `cfram_rrtmg`：全场版（nlat=81, nlon=121），用于调试
-- `cfram_rrtmg_1col`：单柱版（nlat=1, nlon=1），用于 Python 并行调用
+生成两个可执行文件：
+- `cfram_rrtmg`：全场版（nlat=81, nlon=121），用于调试 / 独立运行
+- `cfram_rrtmg_1col`：单柱版（nlat=1, nlon=1），用于 Python multiprocessing 并行调用
+
+若需 ifort 编译，改用 `makefile.ifort`。
 
 ---
 
@@ -165,89 +199,180 @@ cd ..
 
 ### 5.1 使用 ERA5 + MERRA-2 独立驱动（标准流程）
 
-#### Step 0：获取源数据
+整个流程包含 5 步：**下载 → 构建输入 → 运行 CFRAM → 出图 → 验证**。每步给出可直接执行的命令；所有路径均相对项目根 `pyCFRAM/`。
 
-- **ERA5 PL+SL**：`scripts/download_era5_flux.py`（需 CDS 账号）；放到 `era5_data/daily/`
-- **MERRA-2 气溶胶**：`scripts/download_merra2_aerosol.py`（需 NASA Earthdata）；放到 `era5_data/merra2/`
+#### Step 1：下载 ERA5 + MERRA-2 源数据
 
-目录结构详见 README "Setup - Step 3"。
+数据量估计：ERA5 daily ~5 GB，MERRA-2 aerosol ~35 GB（2003–2022 年 8 月全量）。
 
-#### Step 1：生成标准 NetCDF 输入
+```bash
+# ERA5 pressure-level + single-level（通过 CDS API）
+python3 scripts/download_era5_flux.py
+
+# MERRA-2 M2I3NVAER 3-hourly 气溶胶（通过 NASA GES DISC）
+python3 scripts/download_merra2_aerosol.py
+```
+
+下载后目录结构：
+
+```
+era5_data/
+├── daily/
+│   ├── era5_pl_{var}_{YYYY}08.nc          # var ∈ {t,q,o3,cc,ciwc,clwc}
+│   └── era5_sl_{YYYY}08/
+│       ├── data_stream-oper_stepType-instant.nc   # skt, sp
+│       ├── data_stream-oper_stepType-accum.nc     # ssrd, ssr, tisr, slhf, sshf
+│       └── data_stream-oper_stepType-max.nc       # mx2t
+└── merra2/
+    └── M2I3NVAER_{YYYYMMDD}.nc4           # 每天一个文件
+```
+
+两个下载脚本均可断点续传（重复运行会跳过已存在文件）。
+
+#### Step 2：构建标准 NetCDF 输入
 
 ```bash
 python3 scripts/build_case_input.py --case eh13
 python3 scripts/build_case_input.py --case eh22
 ```
 
-`build_case_input.py` 从 `cases/<case>/case.yaml` 的 `source:` 段读取配置，生成：
-- `cases/<case>/input/{base,perturbed}_{pres,surf}.nc` — state 变量
-- `cases/<case>/input/nonrad_forcing.nc` — 非辐射 forcing（lhflx, shflx）
+该脚本从 `cases/<case>/case.yaml` 的 `source:` 段读取配置（warm_days、clim_years、CO2 值、气溶胶数据源），执行：
 
-#### Step 2：一键运行
+1. ERA5 PL 变量 → daily mean → warm-days 平均 → base / perturbed 两态
+2. ERA5 SL accum 字段（solar, lhflx, shflx）经 `×6 ÷86400` 累积修正转 W/m²
+3. MERRA-2 气溶胶 6 物种（bc/ocphi/ocpho/sulf/ss/dust）垂直 log-p + 水平双线性插值到 ERA5 网格
+4. 写出 5 个 NetCDF 文件到 `cases/<case>/input/`
+
+输出：
+
+```
+cases/eh13/input/
+├── base_pres.nc          # (1, 37, 97, 121) T, q, o3, camt, cliq, cice, co2, 6 种气溶胶
+├── base_surf.nc          # (1, 97, 121) ts, ps, solar, albedo
+├── perturbed_pres.nc
+├── perturbed_surf.nc
+└── nonrad_forcing.nc     # ΔF lhflx, shflx (W/m²)
+```
+
+构建过程会打印关键指标（solar/lhflx/shflx domain mean 等），若数值与 Step 5 验证表相差 5× 以上，检查 ×6 累积修正（见 [第 13 节排错](#13-常见坑与排错)）。
+
+#### Step 3：运行 CFRAM 计算
 
 ```bash
 python3 run_case.py eh13
 python3 run_case.py eh22
 ```
 
-`run_case.py` 依次执行三步：
-1. **extract**：读取输入 NetCDF，计算气溶胶光学属性，写入 Fortran 二进制
-2. **run**：multiprocessing 并行运行 CFRAM（默认用满所有 CPU）
-3. **plot**：生成温度分解空间图
-
-也可分步执行：
+`run_case.py` 默认依次执行四步：`build → extract → run → plot`。若 Step 2 已完成，可跳过 build：
 
 ```bash
-python3 run_case.py eh13 --step extract
-python3 run_case.py eh13 --step run --nproc 40
-python3 run_case.py eh13 --step plot
+python3 run_case.py eh13 --step extract    # NetCDF → Fortran 二进制 + GOCART 光学属性
+python3 run_case.py eh13 --step run --nproc 40   # multiprocessing 并行调 cfram_rrtmg_1col
+python3 run_case.py eh13 --step plot       # 生成 fig3_independent.png
 ```
 
-#### Step 3：查看结果
+80 进程并行时单 case 约 **20 分钟**（9801 格点，~8.3 pts/s）。
 
-- 计算结果：`cases/eh13/output/cfram_result.nc`
-- 图形结果：`cases/eh13/figures/fig3_decomposition.png`
+#### Step 4：查看结果
 
-额外出图：
+```
+cases/eh13/output/cfram_result.nc       # 分解结果（变量列表见 §8）
+cases/eh13/figures/fig3_independent.png # 双列对比图：paper | independent
+```
+
+额外出图（可选）：
 
 ```bash
 python3 scripts/plot_fig5.py --case eh13 eh22   # Fig.5 气溶胶分种类
 ```
 
-### 5.2 添加新 case
+#### Step 5：验证（对比 Wu et al. paper_data）
 
-1. 创建目录和配置：
+前提：`paper_data/` 目录已放置（仅验证需要，非标准流程必需）。
 
 ```bash
-mkdir -p cases/my_case/input
+python3 scripts/validate_vs_paper.py eh22
+python3 scripts/validate_vs_paper.py eh13
 ```
 
-2. 编写 `cases/my_case/case.yaml`：
+期望输出（关键行）：
+
+```
+=== EH22: CORRECTED comparison: surface dT ===
+  term            paper      indep     corr
+  cld            2.0986     2.5684    0.952
+  wv             1.1597     1.2035    0.998
+  ...
+  lhflx         -3.5229    -3.6152    0.993
+  shflx         -3.3168    -3.3560    0.993
+```
+
+合格标准（§9 详细表）：
+- **wv、lhflx、shflx 的 corr > 0.99** — pipeline 核心正确
+- **cld、aerosol 的 corr > 0.90** — 空间模式一致，数值上存在已知的路径 A vs B 互补偏差
+
+### 5.2 case.yaml 标准格式
+
+以 `cases/eh22/case.yaml` 为例：
 
 ```yaml
-case_name: MY_CASE
-description: "My analysis: scenario A vs scenario B"
+case_name: EH22
+description: "East China extreme heat, Aug 2022 vs 2003–2022 climatology"
+
+source:
+  type: era5_daily
+  data_dir: era5_data/daily
+  temporal:
+    event_year: 2022
+    event_month: 8
+    clim_years: [2003, 2022]
+    warm_days: [2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+    # 可选：若不指定 warm_days，会用以下自动检测
+    warm_detect:
+      threshold_pct: 90
+      min_consecutive: 3
+      detect_region:
+        lat: [27, 35]
+        lon: [103, 122]
+  co2:
+    source: constant
+    base_ppmv: 394.23          # 气候态，来自 paper_data 反推
+    perturbed_ppmv: 416.89      # 事件年
+  aerosol:
+    source: merra2
+    data_dir: era5_data/merra2
 
 input:
   base_pres: input/base_pres.nc
   base_surf: input/base_surf.nc
   perturbed_pres: input/perturbed_pres.nc
   perturbed_surf: input/perturbed_surf.nc
-  # nonrad_forcing: input/nonrad_forcing.nc  # 可选
+  nonrad_forcing: input/nonrad_forcing.nc
 
 plot:
   key_region:
-    lon: [100, 120]
-    lat: [25, 40]
+    lon: [103, 122]
+    lat: [27, 35]
 ```
 
-3. 准备输入 NetCDF 文件（格式见 `docs/input_spec.md`）
+### 5.3 添加新 case
 
-4. 运行：
+1. 复制现有 case 目录作为模板：
 
 ```bash
+cp -r cases/eh22 cases/my_case
+```
+
+2. 编辑 `cases/my_case/case.yaml`：修改 `case_name`、`source.temporal`（event_year、warm_days）、`co2`、`plot.key_region`。
+
+3. 运行：
+
+```bash
+python3 scripts/build_case_input.py --case my_case
 python3 run_case.py my_case
 ```
+
+如果是非 ERA5 数据源（如 CMIP6 模式输出），需在 `data/` 下新增 DataSource 子类（参考 `era5_source.py`）并用 `@register_source('your_type')` 注册，再在 `case.yaml` 里设 `source.type: your_type`。
 
 ---
 
@@ -326,31 +451,51 @@ from core.config import load_case, defaults, get_plev, get_aerosol_map
 
 ---
 
-## 9. 验证结果
+## 9. 验证结果（独立 ERA5+MERRA-2 pipeline, v3）
 
-### 9.1 单柱验证 (115°E, 32°N)
+以下结果基于 2026-04-12 的 v3 版本（×6 累积修正、CO2 对齐、warm_days 对齐完成后）。完整重跑命令：
 
-| 项目 | Fortran 输出 | paper_data | 差值 |
-|------|-------------|------------|------|
-| Total dT (surface) | 4.650 K | 4.659 K | 0.009 K |
-| WV dT (surface) | -3.181 K | -3.143 K | 0.038 K |
+```bash
+python3 scripts/build_case_input.py --case eh22
+python3 run_case.py eh22
+python3 scripts/validate_vs_paper.py eh22
+```
 
-### 9.2 全场验证（地表层空间相关系数）
+### 9.1 EH22（2022 年 8 月事件 vs 2003–2022 气候态）
 
-| 分解项 | EH13 | EH22 | 说明 |
-|--------|------|------|------|
-| Water Vapor | 0.997 | 0.998 | RRTMG 自计算 |
-| Cloud | 0.945 | 0.956 | RRTMG 自计算 |
-| Aerosol (total) | 0.885 | 0.842 | RRTMG 自计算 |
-| Surface Process | 0.999 | 0.998 | Planck 矩阵 × paper forcing |
-| Atm. Dynamics | 0.621 | 0.514 | 残差法 |
-| **Total (observed)** | **0.981** | **0.981** | ERA5 观测 |
+Domain mean 地表 ΔT 与 Wu et al. paper_data 对比（空间裁剪至 20–40°N）：
 
-### 9.3 已知差异原因
+| 分解项 | paper | v3 (indep) | 空间 corr | 说明 |
+|---|---|---|---|---|
+| Water Vapor | 1.16 K | 1.20 K | **0.998** | 核心项，近完美 |
+| Cloud | 2.10 K | 2.57 K | 0.952 | 符号正确；数值差异见 §9.3 |
+| Aerosol (total) | 1.11 K | 1.38 K | 0.829 | 同上 |
+| CO₂ | 0.077 K | 0.081 K | 0.964 | ✓ |
+| Albedo | 0.220 K | 0.196 K | 0.972 | ✓ |
+| Solar | −0.032 K | −0.029 K | 0.757 | 值小，相关性对小扰动敏感 |
+| LHFLX | −3.52 K | −3.62 K | **0.993** | 核心项 |
+| SHFLX | −3.32 K | −3.36 K | **0.993** | 核心项 |
 
-1. **Cloud/Aerosol 互补偏差**：气溶胶从 6 种聚合物种近似映射到单一 GOCART bin，导致气溶胶偏大、云偏小，但两者之和一致
-2. **大气动力项精度较低**：因 cloud/aerosol 偏差传播到残差
-3. **论文的 `dyn` = `atmdyn + sfcdyn + lhflx + shflx`**（全部非辐射项之和）
+### 9.2 EH13（2013 年 8 月事件 vs 2003–2022 气候态）
+
+| 分解项 | paper | v3 (indep) | 空间 corr | 说明 |
+|---|---|---|---|---|
+| Water Vapor | −1.35 K | −1.43 K | **0.997** | 核心项 |
+| Cloud | 1.33 K | 0.60 K | 0.945 | 偏低但空间模式一致 |
+| Aerosol (total) | 0.62 K | 1.01 K | 0.873 | 偏高但空间模式一致 |
+| CO₂ | 0.003 K | 0.002 K | 0.156 | 值极小，corr 不具参考性 |
+| Albedo | 0.082 K | 0.058 K | 0.962 | ✓ |
+| LHFLX | −1.95 K | −1.80 K | **0.992** | 核心项 |
+| SHFLX | −2.49 K | −2.39 K | **0.992** | 核心项 |
+
+### 9.3 Cloud / Aerosol 互补偏差的来源
+
+Paper（路径 B）采用**离线预计算气溶胶 forcing + Planck 矩阵求逆**，本质为一阶线性分解；本实现（路径 A）采用 **RRTMG 内直接注入气溶胶混合比 + CFRAM partial perturbation**，保留 aerosol-cloud 辐射耦合的非线性。两者在 cloud 与 aerosol 各自的分配上会产生系统性偏差，但**cloud + aerosol 合计**与 paper corr > 0.95：
+
+- EH22: cloud+aer paper=3.21 K, indep=3.95 K
+- EH13: cloud+aer paper=1.95 K, indep=1.62 K
+
+这是**方法学差异**而非 bug，选择路径 A 的理由详见项目根目录 `README.md` 及开发笔记。物种数上，本实现比 paper 更精细（6 种 vs 5 种，OC 拆为亲水/疏水）。
 
 ---
 
@@ -418,9 +563,102 @@ mixing_ratio × air_density × layer_thickness × mass_extinction_coeff → AOD 
 
 ## 12. 后续开发方向
 
-1. **气溶胶 15-bin 精确映射**：替代当前 6→1 bin 近似，改善 cloud/aerosol 分配精度
-2. **ERA5 数据自动预处理**：从原始 ERA5 日数据计算 base/perturbed 态，完全脱离 paper_data
-3. **f2py 封装 RRTMG**：避免临时文件 I/O，提升单格点性能
-4. **支持不同气压层数**：通过 Fortran namelist 运行时指定（当前固定 37 层）
-5. **DAMIP/CMIP6 接口**：支持模式输出作为输入
-6. **Energy Gain Kernel 框架集成**
+已完成项（移出本节）：
+- ✅ 气溶胶 15-bin → 6 种独立物种映射（已经是每物种独立光学属性 + RRTMG `iaer=10`）
+- ✅ ERA5+MERRA-2 自动预处理（`build_case_input.py` + `case.yaml` 驱动）
+
+待办：
+
+1. **路径 B 备用模块**（低优先级）：实现离线气溶胶 forcing 预计算 + Planck 求逆，与 Wu et al. 一比一数值对齐，供对照实验用
+2. **CO2 空间变化**：当前用常数（paper_data 反推），升级为 MERRA-2 M2I3NVCHM 或 CAMS CO2 3D 场
+3. **O3 数据源统一**：目前用 ERA5 o3，可切换为 MERRA-2 O3（减少数据源异质性）
+4. **atmdyn / sfcdyn 残差项**：从 ERA5/MERRA-2 能量收支残差计算，扩写 `nonrad_forcing.nc`
+5. **f2py 封装 RRTMG**：避免临时文件 I/O，预计单格点速度提升 2-3 倍
+6. **支持不同气压层数**：通过 Fortran namelist 运行时指定（当前固定 37 层）
+7. **CMIP6 / DAMIP 接口**：新增 `CMIP6Source` 继承 `DataSource`
+8. **Fig.4 PAP 柱状图独立版**：尚未基于 v3 结果重制
+9. **敏感性实验框架**：单点柱 ablation（关闭 cloud / aerosol / WV 各一项）
+
+---
+
+## 13. 常见坑与排错
+
+### 13.1 cloud dT 符号翻转 / lhflx 量级偏小 ~6×
+
+**症状**：
+- validate_vs_paper.py 显示 `cld` 为负值（paper 为正）
+- `lhflx` forcing domain mean ≈ −1 W/m²（paper ≈ −7）
+
+**根因**：ERA5 CDS 返回的 6-hourly accumulation 字段**每步只含 1 小时累积**，并非完整的 6 小时累积。`data/era5_source.py:_sixhourly_accum_to_daily_wm2()` 中必须保留 `×6` 外推因子：
+
+```python
+daily_total = reshaped.sum(axis=1) * 6    # ← 关键的 ×6
+return daily_total / SECS_PER_DAY
+```
+
+**自检**：build 阶段日志中 solar ~415 W/m²、lhflx ~−7 W/m²、shflx ~−5 W/m² 属正常；若 solar ~70 W/m² 则说明 ×6 缺失。
+
+### 13.2 CO2 偏差导致 `dT_co2` 数量级错误
+
+**症状**：`dT_co2` 与 paper 偏差 > 50%。
+
+**根因**：`case.yaml` 中 CO2 值使用了今日大气浓度（~415 ppmv），未对齐 Wu et al. 使用的气候态值。
+
+**修复**：
+- EH22: `base_ppmv: 394.23, perturbed_ppmv: 416.89`
+- EH13: `base_ppmv: 395.54, perturbed_ppmv: 396.14`
+
+（这些值从 `paper_data/input_check.nc` 的 co2 字段 domain mean 反推。自建 case 需另行确定气候态 CO2。）
+
+### 13.3 Warm days 自动检测与 paper 不一致
+
+**症状**：`build_case_input.py` 打印的 warm period 范围与 paper 描述差 1-2 天。
+
+**修复**：在 `case.yaml` 的 `temporal` 段手动指定 `warm_days` 列表（0-indexed August day），覆盖自动检测：
+
+```yaml
+warm_days: [2,3,4,...,23]    # Aug 3-24
+```
+
+### 13.4 Surface 层读取 index 错误
+
+**症状**：`dT_cloud` 等在地表的数值看起来只有几个百分之一，远小于预期。
+
+**根因**：`cfram_result.nc` 中 `lev` 维度**surface 在最后（`lev[-1] = 1013 hPa`）**，不是首位。Paper 的 `partial_t.nc` 则是 surface 在首位（`lev[0] = 1013 hPa`）。
+
+**修复**：读地表层时，独立结果用 `d[-1, :, :]`，paper 结果用 `d[0, :, :]`。`validate_vs_paper.py` 已区分处理。
+
+### 13.5 netCDF4 / GLIBC 版本错误
+
+**症状**：`ImportError: GLIBC_2.25 not found`。
+
+**根因**：机器 GLIBC 过旧（如 RHEL 7 早期）。
+
+**修复**：换一台新机器跑，或用 conda 环境并设置 `LD_LIBRARY_PATH` 指向 conda 的 libc。
+
+### 13.6 Fortran OpenMP 并行崩溃 / 静默错误
+
+**症状**：给 `cfram_rrtmg.f90` 加 `!$OMP PARALLEL DO` 后多线程运行无输出，或输出全 0。
+
+**根因**：RRTMG 内部 module 有 SAVE 变量，线程不安全。
+
+**修复**：不要用 OpenMP。使用 `run_parallel_python.py` 的 multiprocessing 方案——每个 worker 进程独立调用 `cfram_rrtmg_1col`，进程隔离规避线程竞争。
+
+### 13.7 CDS / Earthdata 下载中断
+
+**症状**：`download_*.py` 在下到一半时网络超时。
+
+**修复**：两个下载脚本均支持断点续传（检查目标文件存在性跳过）。直接重跑即可：
+
+```bash
+python3 scripts/download_era5_flux.py
+python3 scripts/download_merra2_aerosol.py
+```
+
+### 13.8 MERRA-2 气溶胶插值后出现负值
+
+**症状**：`base_pres.nc` 里 bc/oc 等字段含极小负值（~ −1e-12）。
+
+**根因**：log-p 插值 + 浮点舍入。
+
+**修复**：`merra2_aerosol.py` 的 `load_merra2_aerosol()` 末尾已执行 `np.maximum(result, 0.0)` 强制非负。无需手动处理。
