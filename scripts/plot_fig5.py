@@ -73,7 +73,12 @@ def load_paper_aerosol(case_name):
 
 
 def load_self_aerosol(case_name):
-    """Load per-species + total aerosol dT from self-computed cfram_result.nc."""
+    """Load per-species + total aerosol dT from self-computed cfram_result.nc.
+
+    Prefers Fortran Phase 3 per-species output (bc/ocphi/ocpho/sulf/ss/dust).
+    Falls back to path-B names (bc/oc/sulf/seas/dust) from nonrad_forcing.nc.
+    Display names follow paper convention: oc = ocphi+ocpho, seas = ss.
+    """
     cfg = load_case(case_name)
     result_file = os.path.join(cfg['_output_dir'], 'cfram_result.nc')
     if not os.path.exists(result_file):
@@ -84,23 +89,51 @@ def load_self_aerosol(case_name):
     lons = np.array(nc.variables['lon'][:])
     sfc = -1  # surface = last index
 
+    def load_field(vname):
+        if vname not in nc.variables:
+            return None
+        arr = np.array(nc.variables[vname][sfc, :, :], dtype=np.float64)
+        return np.where(np.abs(arr) > 900, np.nan, arr)
+
+    def has_fortran(vname):
+        a = load_field(vname)
+        return a is not None and np.isfinite(a).any()
+
     data = {}
-    # Per-species (from Planck matrix × paper forcing)
-    for species in ['bc', 'oc', 'sulf', 'seas', 'dust']:
-        vname = 'dT_' + species
-        if vname in nc.variables:
-            arr = np.array(nc.variables[vname][sfc, :, :], dtype=np.float64)
-            data[species] = np.where(np.abs(arr) > 900, np.nan, arr)
+    fortran_active = has_fortran('dT_ocphi') or has_fortran('dT_ss')
 
-    # Total from RRTMG
-    if 'dT_aerosol' in nc.variables:
-        arr = np.array(nc.variables['dT_aerosol'][sfc, :, :], dtype=np.float64)
-        data['total'] = np.where(np.abs(arr) > 900, np.nan, arr)
+    if fortran_active:
+        # Fortran Phase 3 output path
+        data['bc']   = load_field('dT_bc')
+        data['sulf'] = load_field('dT_sulf')
+        data['dust'] = load_field('dT_dust')
+        ocphi = load_field('dT_ocphi')
+        ocpho = load_field('dT_ocpho')
+        if ocphi is not None and ocpho is not None:
+            data['oc'] = np.nansum(np.stack([np.nan_to_num(ocphi), np.nan_to_num(ocpho)]), axis=0)
+        elif ocphi is not None:
+            data['oc'] = ocphi
+        elif ocpho is not None:
+            data['oc'] = ocpho
+        ss = load_field('dT_ss')
+        if ss is not None:
+            data['seas'] = ss
+    else:
+        # Path-B legacy names
+        for species in ['bc', 'oc', 'sulf', 'seas', 'dust']:
+            a = load_field('dT_' + species)
+            if a is not None:
+                data[species] = a
 
-    # If per-species available but no RRTMG total, sum species
-    if 'total' not in data and 'bc' in data:
+    # Total: prefer bulk RRTMG dT_aerosol; fall back to sum of species.
+    total = load_field('dT_aerosol')
+    if total is not None:
+        data['total'] = total
+    elif 'bc' in data:
         data['total'] = sum(np.nan_to_num(data.get(s, 0)) for s in ['bc','oc','sulf','seas','dust'])
 
+    # Strip None entries so downstream .get() defaults apply.
+    data = {k: v for k, v in data.items() if v is not None}
     nc.close()
     return lats, lons, data
 
@@ -219,6 +252,11 @@ def main():
             if pdata and sdata and 'total' in pdata and 'total' in sdata:
                 p = pdata['total']
                 s = sdata['total']
+                if p.shape != s.shape:
+                    cfg = load_case(cn)
+                    print("  %s: grid shapes differ (paper=%s, self=%s); skipping total validation" %
+                          (cfg.get('case_name', cn), p.shape, s.shape))
+                    continue
                 mask = np.isfinite(p) & np.isfinite(s) & (np.abs(p) < 900) & (np.abs(s) < 900)
                 if mask.sum() > 0:
                     diff = s[mask] - p[mask]

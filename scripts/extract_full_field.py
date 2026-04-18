@@ -24,6 +24,10 @@ FORTRAN_DIR = get_fortran_dir()
 _aer_cfg = get_aerosol_map()
 AEROSOL_MAP = {k: (v['lw'], v['sw'], v['rd']) for k, v in _aer_cfg.items()}
 
+# Canonical species order (must match run_parallel_python.py and Fortran reader).
+SPECIES_ORDER = ['bc', 'ocphi', 'ocpho', 'sulf', 'ss', 'dust']
+NSPECIES = len(SPECIES_ORDER)
+
 
 def write_bin(filepath, data):
     np.asarray(data, dtype=np.float64).tofile(filepath)
@@ -61,16 +65,19 @@ def compute_aerosol_full_field(aer_data, rh, thick, dens, lookup_dir):
         thick: (nlev, nlat, nlon) layer thickness in meters
         dens: (nlev, nlat, nlon) air density kg/m3
     Returns:
-        aod_lw: (nlev, nlat, nlon, 16)
-        aod_sw: (nlev, nlat, nlon, 14)
-        ssa_sw: (nlev, nlat, nlon, 14)
-        g_sw:   (nlev, nlat, nlon, 14)
+        aod_lw: (nlev, nlat, nlon, 16)         bulk (sum of species)
+        aod_sw: (nlev, nlat, nlon, 14)         bulk
+        ssa_sw: (nlev, nlat, nlon, 14)         effective (AOD-weighted)
+        g_sw:   (nlev, nlat, nlon, 14)         effective
+        per_species: dict {species: {'aod_lw','aod_sw','ssa_sw','g_sw'}}
+                     raw per-species arrays (ssa/g unweighted).
     """
     nlev, nlat, nlon = rh.shape
     total_aod_lw = np.zeros((nlev, nlat, nlon, NBND_LW))
     total_aod_sw = np.zeros((nlev, nlat, nlon, NBND_SW))
     total_aod_ssa_sw = np.zeros((nlev, nlat, nlon, NBND_SW))
     total_aod_g_sw = np.zeros((nlev, nlat, nlon, NBND_SW))
+    per_species = {}
 
     LW_BANDS = slice(14, 30)
     SW_BANDS = slice(0, 14)
@@ -100,9 +107,10 @@ def compute_aerosol_full_field(aer_data, rh, thick, dens, lookup_dir):
         kext_lw = bext_lw[rh_idx, :]  # (nlev*nlat*nlon, 16)
         kext_lw = kext_lw.reshape(nlev, nlat, nlon, NBND_LW)
 
-        aod = mixing[:, :, :, None] * dens[:, :, :, None] * 1e3 * \
+        aod_sp_lw = mixing[:, :, :, None] * dens[:, :, :, None] * 1e3 * \
               thick[:, :, :, None] * kext_lw * 1e-3
-        total_aod_lw += np.nan_to_num(aod)
+        aod_sp_lw = np.nan_to_num(aod_sp_lw)
+        total_aod_lw += aod_sp_lw
 
         # SW
         lut_sw_path = os.path.join(lookup_dir, lut_sw_file)
@@ -124,19 +132,25 @@ def compute_aerosol_full_field(aer_data, rh, thick, dens, lookup_dir):
         g_out = g_sw_tab[rh_idx_sw, :].reshape(nlev, nlat, nlon, NBND_SW)
 
         ssa = np.where(qe > 0, qs / qe, 0.0)
-        aod_sw = mixing[:, :, :, None] * dens[:, :, :, None] * 1e3 * \
+        aod_sp_sw = mixing[:, :, :, None] * dens[:, :, :, None] * 1e3 * \
                  thick[:, :, :, None] * kext * 1e-3
-        aod_sw = np.nan_to_num(aod_sw)
-        total_aod_sw += aod_sw
-        total_aod_ssa_sw += aod_sw * ssa
-        total_aod_g_sw += aod_sw * ssa * g_out
+        aod_sp_sw = np.nan_to_num(aod_sp_sw)
+        total_aod_sw += aod_sp_sw
+        total_aod_ssa_sw += aod_sp_sw * ssa
+        total_aod_g_sw += aod_sp_sw * ssa * g_out
+        per_species[species] = {
+            'aod_lw': aod_sp_lw,
+            'aod_sw': aod_sp_sw,
+            'ssa_sw': np.nan_to_num(ssa),
+            'g_sw': np.nan_to_num(g_out),
+        }
         print("done")
 
     with np.errstate(divide='ignore', invalid='ignore'):
         eff_ssa = np.where(total_aod_sw > 0, total_aod_ssa_sw / total_aod_sw, 0.0)
         eff_g = np.where(total_aod_ssa_sw > 0, total_aod_g_sw / total_aod_ssa_sw, 0.0)
 
-    return total_aod_lw, total_aod_sw, eff_ssa, eff_g
+    return total_aod_lw, total_aod_sw, eff_ssa, eff_g, per_species
 
 
 def main():
@@ -235,7 +249,7 @@ def main():
     rh_base = compute_rh(q_base, t_base, p_hpa_3d)
 
     if os.path.isdir(LOOKUP_DIR):
-        aod_lw_base, aod_sw_base, ssa_sw_base, g_sw_base = \
+        aod_lw_base, aod_sw_base, ssa_sw_base, g_sw_base, perspc_base = \
             compute_aerosol_full_field(aer_base, rh_base, thick_base, dens_base, LOOKUP_DIR)
 
         # Warm state
@@ -245,7 +259,7 @@ def main():
         dens_warm = (p_hpa_3d * 100.0) / (Rd * t_warm)
         thick_warm = delp_w / (dens_warm * 9.8)
         rh_warm = compute_rh(q_warm, t_warm, p_hpa_3d)
-        aod_lw_warm, aod_sw_warm, ssa_sw_warm, g_sw_warm = \
+        aod_lw_warm, aod_sw_warm, ssa_sw_warm, g_sw_warm, perspc_warm = \
             compute_aerosol_full_field(aer_warm, rh_warm, thick_warm, dens_warm, LOOKUP_DIR)
     else:
         print("WARNING: no lookup tables, zero aerosol")
@@ -253,8 +267,12 @@ def main():
         aod_sw_base = np.zeros((nlev, nlat, nlon, NBND_SW))
         ssa_sw_base = np.zeros((nlev, nlat, nlon, NBND_SW))
         g_sw_base = np.zeros((nlev, nlat, nlon, NBND_SW))
-        aod_lw_warm = aod_sw_warm = ssa_sw_warm = g_sw_warm = \
-            aod_lw_base.copy(), aod_sw_base.copy(), ssa_sw_base.copy(), g_sw_base.copy()
+        aod_lw_warm = aod_lw_base.copy()
+        aod_sw_warm = aod_sw_base.copy()
+        ssa_sw_warm = ssa_sw_base.copy()
+        g_sw_warm = g_sw_base.copy()
+        perspc_base = {}
+        perspc_warm = {}
 
     # ---- Write Fortran binary ----
     # Fortran reads: (ilev, ilat, ilon) for 3D, (ilat, ilon) for 2D
@@ -333,6 +351,26 @@ def main():
     write_aer("aerosol_ssa_sw_warm.dat", ssa_sw_warm)
     write_aer("aerosol_g_sw_base.dat", g_sw_base)
     write_aer("aerosol_g_sw_warm.dat", g_sw_warm)
+
+    # Per-species optical properties. Array shape (nlev, nlat, nlon, nbnd, nspecies)
+    # passed through write_aer (np.asfortranarray): Fortran reads as
+    # arr(nlev, nlat, nlon, nbnd, nspecies) with nlev fastest, species slowest --
+    # consistent with bulk file layout with an added trailing species dim.
+    def stack_full(perspc, field, nbnd):
+        arr = np.zeros((nlev, nlat, nlon, nbnd, NSPECIES), dtype=np.float64)
+        for i, s in enumerate(SPECIES_ORDER):
+            if s in perspc:
+                arr[..., i] = perspc[s][field]
+        return arr
+
+    write_aer("aerosol_aod_lw_base_spc.dat", stack_full(perspc_base, 'aod_lw', NBND_LW))
+    write_aer("aerosol_aod_lw_warm_spc.dat", stack_full(perspc_warm, 'aod_lw', NBND_LW))
+    write_aer("aerosol_aod_sw_base_spc.dat", stack_full(perspc_base, 'aod_sw', NBND_SW))
+    write_aer("aerosol_aod_sw_warm_spc.dat", stack_full(perspc_warm, 'aod_sw', NBND_SW))
+    write_aer("aerosol_ssa_sw_base_spc.dat", stack_full(perspc_base, 'ssa_sw', NBND_SW))
+    write_aer("aerosol_ssa_sw_warm_spc.dat", stack_full(perspc_warm, 'ssa_sw', NBND_SW))
+    write_aer("aerosol_g_sw_base_spc.dat", stack_full(perspc_base, 'g_sw', NBND_SW))
+    write_aer("aerosol_g_sw_warm_spc.dat", stack_full(perspc_warm, 'g_sw', NBND_SW))
 
     # Verification
     print("\n=== Verification ===")

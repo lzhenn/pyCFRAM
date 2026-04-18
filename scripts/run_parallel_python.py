@@ -30,6 +30,11 @@ LOOKUP_DIR = get_lookup_dir()
 _aer_cfg = get_aerosol_map()
 AEROSOL_MAP = {k: (v['lw'], v['sw'], v['rd']) for k, v in _aer_cfg.items()}
 
+# Canonical species order for per-species aerosol perturbation output.
+# Must match the order expected by Fortran when reading *_spc.dat files.
+SPECIES_ORDER = ['bc', 'ocphi', 'ocpho', 'sulf', 'ss', 'dust']
+NSPECIES = len(SPECIES_ORDER)
+
 # Global data (set by initializer)
 G = {}
 
@@ -49,18 +54,29 @@ def compute_rh(q, t, p_hpa):
 
 
 def compute_aerosol_column(aer_data, rh, thick, dens):
-    """Compute aerosol optics for single column."""
+    """Compute aerosol optics for single column.
+
+    Returns:
+        aod_lw, aod_sw, eff_ssa, eff_g: bulk (all-species) arrays (existing)
+        per_species: dict {species: {'aod_lw','aod_sw','ssa_sw','g_sw'}} where
+                     ssa_sw/g_sw are the raw (per-species, unweighted) values.
+    """
     LW_BANDS = slice(14, 30)
     SW_BANDS = slice(0, 14)
     aod_lw = np.zeros((NLEV, NBND_LW))
     aod_sw = np.zeros((NLEV, NBND_SW))
     aod_ssa = np.zeros((NLEV, NBND_SW))
     aod_g = np.zeros((NLEV, NBND_SW))
+    per_species = {}
 
     for species, (lut_lw, lut_sw, rd) in AEROSOL_MAP.items():
         if species not in aer_data:
             continue
         mixing = aer_data[species]
+        sp_aod_lw = np.zeros((NLEV, NBND_LW))
+        sp_aod_sw = np.zeros((NLEV, NBND_SW))
+        sp_ssa_sw = np.zeros((NLEV, NBND_SW))
+        sp_g_sw = np.zeros((NLEV, NBND_SW))
         for lut_file, bands, nbnd, target in [(lut_lw, LW_BANDS, NBND_LW, 'lw'), (lut_sw, SW_BANDS, NBND_SW, 'sw')]:
             table = G['lut'][lut_file]
             r_idx = int(rd) - 1 if rd >= 1 else int(np.argmin(np.abs(table['radius'] - rd)))
@@ -71,6 +87,7 @@ def compute_aerosol_column(aer_data, rh, thick, dens):
             aod_col = np.nan_to_num(aod_col)
             if target == 'lw':
                 aod_lw += aod_col
+                sp_aod_lw = aod_col
             else:
                 aod_sw += aod_col
                 qext = table['qext'][r_idx, :, bands]
@@ -80,11 +97,33 @@ def compute_aerosol_column(aer_data, rh, thick, dens):
                 g_col = np.array([g_tab[rh_idx[i], :] for i in range(NLEV)])
                 aod_ssa += aod_col * ssa_col
                 aod_g += aod_col * ssa_col * g_col
+                sp_aod_sw = aod_col
+                sp_ssa_sw = np.nan_to_num(ssa_col)
+                sp_g_sw = np.nan_to_num(g_col)
+        per_species[species] = {
+            'aod_lw': sp_aod_lw,
+            'aod_sw': sp_aod_sw,
+            'ssa_sw': sp_ssa_sw,
+            'g_sw': sp_g_sw,
+        }
 
     with np.errstate(divide='ignore', invalid='ignore'):
         eff_ssa = np.where(aod_sw > 0, aod_ssa / aod_sw, 0.0)
         eff_g = np.where(aod_ssa > 0, aod_g / aod_ssa, 0.0)
-    return aod_lw, aod_sw, eff_ssa, eff_g
+    return aod_lw, aod_sw, eff_ssa, eff_g, per_species
+
+
+def stack_species(per_species, field, shape):
+    """Stack per-species arrays into (*shape, NSPECIES), zero-fill missing species.
+
+    Species is the LAST axis (innermost in C-order on disk). This matches the
+    Fortran reader, which uses `isp` as the innermost implied-DO loop index.
+    """
+    arr = np.zeros(tuple(shape) + (NSPECIES,), dtype=np.float64)
+    for i, s in enumerate(SPECIES_ORDER):
+        if s in per_species:
+            arr[..., i] = per_species[s][field]
+    return arr
 
 
 def write_bin(fp, data):
@@ -151,7 +190,7 @@ def process_column(args):
     thick_b = delp / (dens_b * 9.8)
     rh_b = compute_rh(q_b, t_b, p_hpa)
 
-    aod_lw_b, aod_sw_b, ssa_sw_b, g_sw_b = compute_aerosol_column(aer_b, rh_b, thick_b, dens_b)
+    aod_lw_b, aod_sw_b, ssa_sw_b, g_sw_b, perspc_b = compute_aerosol_column(aer_b, rh_b, thick_b, dens_b)
 
     p_half_w = p_half.copy()
     p_half_w[-1] = ps_w / 100.0
@@ -159,7 +198,7 @@ def process_column(args):
     dens_w = (p_hpa * 100.0) / (Rd * t_w)
     thick_w = delp_w / (dens_w * 9.8)
     rh_w = compute_rh(q_w, t_w, p_hpa)
-    aod_lw_w, aod_sw_w, ssa_sw_w, g_sw_w = compute_aerosol_column(aer_w, rh_w, thick_w, dens_w)
+    aod_lw_w, aod_sw_w, ssa_sw_w, g_sw_w, perspc_w = compute_aerosol_column(aer_w, rh_w, thick_w, dens_w)
 
     # Write to temp dir
     tmpdir = tempfile.mkdtemp(prefix='cfram_')
@@ -206,6 +245,27 @@ def process_column(args):
     write_aer_bin(os.path.join(dp, 'aerosol_g_sw_base.dat'), g_sw_b)
     write_aer_bin(os.path.join(dp, 'aerosol_g_sw_warm.dat'), g_sw_w)
 
+    # Per-species optical properties: shape (NLEV, NBND, NSPECIES), C-order.
+    # Species is the LAST (fastest-varying) axis, matching Fortran READ where
+    # `isp` is the innermost implied-DO loop index. Species order is
+    # SPECIES_ORDER = ['bc','ocphi','ocpho','sulf','ss','dust'].
+    write_aer_bin(os.path.join(dp, 'aerosol_aod_lw_base_spc.dat'),
+                  stack_species(perspc_b, 'aod_lw', (NLEV, NBND_LW)))
+    write_aer_bin(os.path.join(dp, 'aerosol_aod_lw_warm_spc.dat'),
+                  stack_species(perspc_w, 'aod_lw', (NLEV, NBND_LW)))
+    write_aer_bin(os.path.join(dp, 'aerosol_aod_sw_base_spc.dat'),
+                  stack_species(perspc_b, 'aod_sw', (NLEV, NBND_SW)))
+    write_aer_bin(os.path.join(dp, 'aerosol_aod_sw_warm_spc.dat'),
+                  stack_species(perspc_w, 'aod_sw', (NLEV, NBND_SW)))
+    write_aer_bin(os.path.join(dp, 'aerosol_ssa_sw_base_spc.dat'),
+                  stack_species(perspc_b, 'ssa_sw', (NLEV, NBND_SW)))
+    write_aer_bin(os.path.join(dp, 'aerosol_ssa_sw_warm_spc.dat'),
+                  stack_species(perspc_w, 'ssa_sw', (NLEV, NBND_SW)))
+    write_aer_bin(os.path.join(dp, 'aerosol_g_sw_base_spc.dat'),
+                  stack_species(perspc_b, 'g_sw', (NLEV, NBND_SW)))
+    write_aer_bin(os.path.join(dp, 'aerosol_g_sw_warm_spc.dat'),
+                  stack_species(perspc_w, 'g_sw', (NLEV, NBND_SW)))
+
     # Symlink single-column executable
     exe_1col = d['exe_1col']
     os.symlink(exe_1col, os.path.join(tmpdir, 'cfram_rrtmg'))
@@ -215,10 +275,14 @@ def process_column(args):
 
     # Read output: forcing + drdt_inv, solve dT in Python
     result = {}
-    rad_terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm']
+    rad_terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm',
+                 'cloud_lw', 'cloud_sw']
     nonrad_terms = ['lhflx', 'shflx']
     dyn_terms = ['atmdyn', 'sfcdyn', 'ocndyn']
+    # Legacy path-B species (from paper_data nonrad_forcing.nc), 5 terms, OC merged.
     aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']
+    # Fortran-produced per-species forcings (Phase 3), 6 terms with OC split.
+    fortran_aer_species = SPECIES_ORDER  # ['bc','ocphi','ocpho','sulf','ss','dust']
 
     if ret == 0:
         # Read forcing from Fortran
@@ -227,6 +291,18 @@ def process_column(args):
                 result['frc_'+t] = read_fortran_seq(os.path.join(do, 'frc_%s.dat' % t))
             except:
                 result['frc_'+t] = np.full(NLEV+1, np.nan)
+
+        # Fortran per-species aerosol forcings (if binary was compiled with Phase 3).
+        # Present: override any path-B value for overlapping names.
+        fortran_has_species = False
+        for t in fortran_aer_species:
+            path = os.path.join(do, 'frc_%s.dat' % t)
+            if os.path.exists(path):
+                try:
+                    result['frc_'+t] = read_fortran_seq(path)
+                    fortran_has_species = True
+                except Exception:
+                    pass
 
         # Read drdt_inv matrix
         try:
@@ -288,18 +364,30 @@ def process_column(args):
             frc_ocndyn[NLEV] = frc_sfcdyn[NLEV] - lhflx_sfc - shflx_sfc
             result['dT_ocndyn'] = solve_dT(frc_ocndyn)
 
-            # lhflx, shflx + per-species aerosol: forcing from paper_data
-            for t in nonrad_terms + aer_species_terms:
+            # lhflx, shflx + path-B per-species aerosol: forcing from paper_data.
+            # Fortran per-species (if present) already overwrote result['frc_<spc>'];
+            # path-B is used only for species whose forcing is NOT from Fortran.
+            for t in nonrad_terms:
                 if 'frc_' + t in d:
                     result['dT_' + t] = solve_dT(d['frc_' + t][:, ilat, ilon])
+            for t in aer_species_terms:
+                # Skip if Fortran already provided this species name (bc/sulf/dust overlap).
+                if t in result and 'frc_' + t in result:
+                    continue
+                if 'frc_' + t in d:
+                    result['dT_' + t] = solve_dT(d['frc_' + t][:, ilat, ilon])
+            # Apply Planck inverse to Fortran per-species forcings.
+            for t in fortran_aer_species:
+                if 'frc_' + t in result:
+                    result['dT_' + t] = solve_dT(result['frc_' + t])
         else:
-            for t in rad_terms + dyn_terms + nonrad_terms + aer_species_terms:
+            for t in rad_terms + dyn_terms + nonrad_terms + aer_species_terms + fortran_aer_species:
                 result['dT_'+t] = np.full(NLEV+1, np.nan)
     else:
         for t in rad_terms:
             result['frc_'+t] = np.full(NLEV+1, np.nan)
             result['dT_'+t] = np.full(NLEV+1, np.nan)
-        for t in dyn_terms + nonrad_terms + aer_species_terms:
+        for t in dyn_terms + nonrad_terms + aer_species_terms + fortran_aer_species:
             result['dT_'+t] = np.full(NLEV+1, np.nan)
 
     shutil.rmtree(tmpdir)
@@ -424,13 +512,18 @@ def main():
     print("Starting %d workers..." % args.nproc)
 
     # Result arrays
-    terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm']
+    terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm',
+             'cloud_lw', 'cloud_sw']
     nonrad_terms = ['lhflx', 'shflx']
     dyn_terms = ['atmdyn', 'sfcdyn', 'ocndyn']
-    aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']
-    all_dT_terms = terms + dyn_terms + nonrad_terms + aer_species_terms
+    aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']           # path-B names
+    fortran_aer_species = SPECIES_ORDER                                # ['bc','ocphi','ocpho','sulf','ss','dust']
+    # Union of all species names (some overlap: bc/sulf/dust)
+    all_species = list(dict.fromkeys(aer_species_terms + fortran_aer_species))
+    all_dT_terms = terms + dyn_terms + nonrad_terms + all_species
     dT_out = {t: np.full((NLEV+1, nlat, nlon), np.nan) for t in all_dT_terms}
-    frc_out = {t: np.full((NLEV+1, nlat, nlon), np.nan) for t in terms}
+    # Bulk radiative + per-species forcings stored in NetCDF
+    frc_out = {t: np.full((NLEV+1, nlat, nlon), np.nan) for t in terms + fortran_aer_species}
 
     done = 0
     with Pool(args.nproc, initializer=init_worker, initargs=(data,)) as pool:
@@ -438,9 +531,12 @@ def main():
             for t in terms:
                 dT_out[t][:, ilat, ilon] = result['dT_'+t]
                 frc_out[t][:, ilat, ilon] = result['frc_'+t]
-            for t in dyn_terms + nonrad_terms + aer_species_terms:
+            for t in dyn_terms + nonrad_terms + all_species:
                 if 'dT_'+t in result:
                     dT_out[t][:, ilat, ilon] = result['dT_'+t]
+            for t in fortran_aer_species:
+                if 'frc_'+t in result:
+                    frc_out[t][:, ilat, ilon] = result['frc_'+t]
             done += 1
             if done % 200 == 0:
                 elapsed = time.time() - t0
@@ -465,9 +561,10 @@ def main():
     for t in all_dT_terms:
         v = nc.createVariable('dT_'+t, 'f8', ('lev', 'lat', 'lon'))
         v[:] = dT_out[t]
-    for t in terms:
-        v = nc.createVariable('frc_'+t, 'f8', ('lev', 'lat', 'lon'))
-        v[:] = frc_out[t]
+    for t in terms + fortran_aer_species:
+        if t in frc_out:
+            v = nc.createVariable('frc_'+t, 'f8', ('lev', 'lat', 'lon'))
+            v[:] = frc_out[t]
 
     # Compute and save observed dT and dynamics residual
     nc_bp2 = Dataset(cfg['input']['base_pres'])
