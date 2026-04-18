@@ -142,7 +142,7 @@ pyCFRAM/
 |------|-------------|
 | Python | 3.8+（推荐 conda/miniconda 环境） |
 | gfortran | ≥ 9.0（编译 RRTMG） |
-| LAPACK/BLAS | 系统自带即可 |
+| LAPACK/BLAS | 桌面 Linux 通常自带；HPC 集群须 `module load lapack`（见 §13.9） |
 | GLIBC | ≥ 2.25（netCDF4 Python 包依赖；老机器如 hqlx74 不满足，需换机） |
 | 磁盘 | 代码 ~500 MB；ERA5+MERRA-2 数据约 **40 GB** |
 | 账号 | Copernicus CDS（下载 ERA5）+ NASA Earthdata（下载 MERRA-2） |
@@ -662,3 +662,30 @@ python3 scripts/download_merra2_aerosol.py
 **根因**：log-p 插值 + 浮点舍入。
 
 **修复**：`merra2_aerosol.py` 的 `load_merra2_aerosol()` 末尾已执行 `np.maximum(result, 0.0)` 强制非负。无需手动处理。
+
+### 13.9 HPC 集群上 LAPACK/BLAS 未加载导致 Fortran 瞬间退出
+
+**症状**：`run_case.py` 在"run"阶段几秒内完成（正常约 20 分钟），日志显示吞吐率异常高（>1000 pts/s），`cfram_result.nc` 中各项分解结果全为 NaN 或 0。
+
+**根因**：HPC 集群上 LAPACK/BLAS 通常由 `module` 系统管理，不加载时动态库不在 `LD_LIBRARY_PATH` 中，`cfram_rrtmg_1col` 启动即退出（无报错输出）。Python worker 未检查 Fortran 子进程返回码，将失败计入"done"，导致结果全为空。
+
+**排查**：
+
+```bash
+# 检查动态库是否可找到（有 "not found" 则说明缺库）
+ldd fortran/cfram_rrtmg_1col | grep -i 'not found'
+
+# 直接运行可执行文件查看错误信息
+cd fortran && ./cfram_rrtmg_1col
+```
+
+**修复**：在编译和运行前加载对应的 LAPACK 模块（具体名称因集群而异）：
+
+```bash
+module load lapack       # 或 module load openblas / intel-mkl 等，视集群而定
+module load blas
+```
+
+也可在 `fortran/makefile` 中将 LAPACK 改为静态链接（`-l:liblapack.a -l:libblas.a`），一次编译后无需每次加载模块。
+
+**注意**：`§4.1` 环境要求表中"LAPACK/BLAS 系统自带即可"的说法适用于普通 Linux 桌面，在 HPC 集群上须显式加载模块。
