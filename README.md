@@ -11,13 +11,18 @@ For the CFRAM methodology, please refer to:
 ## Architecture
 
 ```
-Fortran RRTMG (radiation engine)
-  └── 11 RRTMG calls per grid point → 9 radiative forcings + Planck matrix (∂R/∂T)
+Fortran RRTMG (radiation engine, per grid point)
+  ├── base + warm + 8 partial-perturbation rad_driver calls
+  ├── Planck matrix (∂R/∂T) via nlayer+1 LW-only perturbations
+  ├── 6 per-species aerosol perturbation calls (bc, ocphi, ocpho, sulf, ss, dust)
+  └── cloud LW/SW component snapshot (zero extra RRTMG calls)
+  → writes 9 bulk + 6 per-species + 2 cloud_lw/sw forcings + Planck inverse
 
 Python (decomposition + analysis)
-  ├── dT_i = -(∂R/∂T)⁻¹ × frc_i          # radiative terms (WV, cloud, aerosol, ...)
-  ├── dT_lhflx/shflx/sfcdyn               # non-radiative via same Planck matrix
-  ├── dT_atmdyn = dT_obs - Σ(all others)  # atmospheric dynamics (residual)
+  ├── dT_i = -(∂R/∂T)⁻¹ × frc_i           # radiative terms (all 17, incl. splits)
+  ├── dT_lhflx/shflx                       # non-radiative via same Planck matrix
+  ├── dT_sfcdyn/ocndyn                     # energy-conservation residuals
+  ├── dT_atmdyn = dT_obs − Σ(all others)   # atmospheric dynamics (residual)
   └── multiprocessing parallel execution   # embarrassingly parallel over grid points
 ```
 
@@ -25,7 +30,7 @@ Python (decomposition + analysis)
 
 - Python 3.8+ with: `numpy`, `netCDF4`, `matplotlib`, `cartopy`, `scipy`
 - `gfortran` (for compiling RRTMG)
-- LAPACK/BLAS libraries
+- LAPACK/BLAS libraries (on HPC clusters, may require `module load lapack`; see `docs/technical_notes_zh.md` §13.9)
 
 ## Setup
 
@@ -137,13 +142,30 @@ pyCFRAM/
 | `build_case_input.py` | ERA5 + MERRA-2 → standard NetCDF input (driven by case.yaml) |
 | `download_era5_flux.py` | Download ERA5 PL+SL data from Copernicus CDS |
 | `download_merra2_aerosol.py` | Download MERRA-2 M2I3NVAER from NASA GES DISC |
-| `extract_full_field.py` | Input NetCDF → Fortran binary (aerosol optics via GOCART) |
+| `extract_full_field.py` | Input NetCDF → Fortran binary (bulk + per-species aerosol optics) |
 | `run_parallel_python.py` | Parallel CFRAM decomposition (multiprocessing) |
 | `plot_fig3_independent.py` | Fig.3: 2-column (paper vs independent) spatial maps |
 | `plot_fig3_self.py` | Fig.3: 6-row spatial decomposition maps |
 | `plot_fig3.py` | Fig.3 directly from paper_data (validation) |
 | `plot_fig4.py` | Fig.4: PAP bar charts |
+| `plot_fig5.py` | Fig.5: per-species aerosol decomposition maps |
 | `validate_vs_paper.py` | Compare surface dT against Wu et al. results |
+| `verify_phase1_spc.py` | Sanity-check per-species optical-property additivity |
+| `verify_phase4_spc.py` | Per-species aerosol forcing/dT additivity + regression |
+| `verify_phase5_vs_paper.py` | Per-species spatial correlation vs Wu et al. paper_data |
+| `verify_cloud_split.py` | Cloud LW/SW additivity (`bulk == lw + sw`) + regression |
+
+## Decomposition Output
+
+`cases/<case>/output/cfram_result.nc` contains partial temperature changes `dT_*` and the underlying radiative forcings `frc_*` (W/m²), shape `(lev, lat, lon)` with surface at `lev[-1]`:
+
+| Group | Terms |
+|-------|-------|
+| Radiative (bulk) | `co2`, `q`, `ts`, `o3`, `solar`, `albedo`, `cloud`, `aerosol`, `warm` |
+| Cloud LW/SW split | `cloud_lw`, `cloud_sw` — exact additive (`cloud == cloud_lw + cloud_sw`) |
+| Aerosol species | `bc`, `ocphi`, `ocpho`, `sulf`, `ss`, `dust` — sum ≈ bulk (small non-linear residual) |
+| Non-radiative | `lhflx`, `shflx` |
+| Derived | `atmdyn`, `sfcdyn`, `ocndyn`, `observed` |
 
 ## Input Data Format
 

@@ -71,12 +71,19 @@ If provided, pyCFRAM uses the Planck matrix from RRTMG to convert these forcings
 |----------|------------|-------|-------------|
 | `lhflx` | (lev, lat, lon) | W/m² | Latent heat flux forcing (perturbed − base) |
 | `shflx` | (lev, lat, lon) | W/m² | Sensible heat flux forcing |
-| `sfcdyn` | (lev, lat, lon) | W/m² | Surface dynamics forcing |
+
+Legacy (path-B validation only, from Wu et al. `partial_forcing.nc`):
+
+| Variable | Dimensions | Units | Description |
+|----------|------------|-------|-------------|
+| `bc`, `oc`, `sulf`, `seas`, `dust` | (lev, lat, lon) | W/m² | Pre-computed per-species aerosol forcing |
 
 ### Notes
 
-- Forcing is defined as: `F = flux_perturbed - flux_base`
+- Forcing convention: `F = flux_perturbed − flux_base`
 - For surface-only fluxes (LH, SH), typically only the surface level is nonzero
+- `sfcdyn`, `ocndyn`, `atmdyn` are **computed internally** in the Python runner from energy-balance residuals, not read from this file
+- Per-species aerosol forcings `bc/oc/sulf/seas/dust` are **optional legacy inputs** for comparison against Wu et al.; the standard ERA5+MERRA-2 pipeline instead produces per-species forcings inside the Fortran RRTMG engine (`dT_bc`, `dT_ocphi`, `dT_ocpho`, `dT_sulf`, `dT_ss`, `dT_dust`). When both are present, Fortran output takes precedence.
 - If this file is absent, pyCFRAM outputs only radiative decomposition terms
 
 ## Data Sources
