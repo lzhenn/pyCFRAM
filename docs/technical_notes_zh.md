@@ -28,7 +28,7 @@ CFRAM 的核心思想是将观测到的温度变化 ΔT 分解为各物理过程
 
 **CFRAM-A 框架（首次将气溶胶纳入 CFRAM）**
 - Zhang, T., Y. Deng, J. Chen, S. Yang, P. Gao, and H. Zhang, 2022: Disentangling physical and dynamical drivers of the 2016/17 record-breaking warm winter in China. *Environmental Research Letters*, 17(7), 074024. https://doi.org/10.1088/1748-9326/ac79c1
-  首个把气溶胶作为独立辐射强迫项显式加入 CFRAM 分解的工作。论文原文："the effect of aerosols … has not been included in the previous CFRAM analysis"。给出 5 物种分解（BC/OC/Sulfate/Sea salt/Dust），用 MERRA-2 驱动 + 离线 RRTMG v5 做辐射传输。pyCFRAM 沿用这一 CFRAM-A 概念框架（含 RRTMG + MERRA-2 驱动），并扩展为 6 物种（OC 拆亲/疏水）的 in-RRTMG 扰动循环 + cloud LW/SW 拆分 + Python 端全矩阵 Planck 求逆。
+  首个把气溶胶作为独立辐射强迫项显式加入 CFRAM 分解的工作。论文原文："the effect of aerosols … has not been included in the previous CFRAM analysis"。给出 5 物种分解（BC/OC/Sulfate/Sea salt/Dust），用 MERRA-2 驱动 + 离线 RRTMG v5 做辐射传输。pyCFRAM 沿用这一 CFRAM-A 概念框架（含 RRTMG + MERRA-2 驱动），并用 Python 编排层重新实现：ERA5 + MERRA-2 自动预处理、Python 端全矩阵 Planck 求逆、multiprocessing 按格点并行。
   注意：Zhang 2022 的气溶胶光学用 **MAM4/CAM6**；pyCFRAM 用 **GOCART 查找表**（承自 Wu 等 2025 参考代码），两者对同一 MERRA-2 混合比给出不同的物种级 forcing。
 
 **CFRAM 应用（极端事件归因）**

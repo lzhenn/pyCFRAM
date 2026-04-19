@@ -205,8 +205,12 @@ pyCFRAM implements — was first introduced by Zhang et al. (2022, *ERL* 17:0740
 https://doi.org/10.1088/1748-9326/ac79c1). That paper notes "the effect of
 aerosols ... has not been included in the previous CFRAM analysis" and
 adds a 5-species aerosol term (BC, OC, sulfate, sea salt, dust) computed via
-off-line RRTMG v5. pyCFRAM inherits this conceptual framework but uses a
-different optical-property source (see below).
+off-line RRTMG v5. pyCFRAM inherits this conceptual framework; relative to
+the Fortran + NCL reference pipeline, the additions here are on the
+orchestration side (automated ERA5 + MERRA-2 preprocessing, Python-side
+full Planck-matrix solve, per-grid-point `multiprocessing` parallelism),
+not on the radiative decomposition itself. The optical-property source
+also differs — see below.
 
 **Input:** MERRA-2 `M2I3NVAER` (13 mass mixing ratios on 72 model levels, kg/kg)
 merged into 6 pyCFRAM species — see `configs/defaults.yaml` for the species map.
