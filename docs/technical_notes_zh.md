@@ -133,11 +133,10 @@ pyCFRAM/
 │   └── merra2_aerosol.py           # MERRA-2 气溶胶加载器（垂直 log-p + 水平双线性插值）
 ├── plotting/                # 可视化模块
 ├── tests/                   # 单元测试
-├── docs/                    # 文档
-│   ├── algorithm_spec.md    # 算法规格说明
-│   ├── input_spec.md        # 输入数据格式规范
-│   └── technical_notes_zh.md # 本文档
-└── validation/              # 验证输出
+└── docs/                    # 文档
+    ├── algorithm_spec.md    # 算法规格说明
+    ├── input_spec.md        # 输入数据格式规范
+    └── technical_notes_zh.md # 本文档
 ```
 
 ---
