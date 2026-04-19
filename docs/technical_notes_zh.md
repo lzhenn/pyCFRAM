@@ -136,7 +136,8 @@ pyCFRAM/
 └── docs/                    # 文档
     ├── algorithm_spec.md    # 算法规格说明
     ├── input_spec.md        # 输入数据格式规范
-    └── technical_notes_zh.md # 本文档
+    ├── technical_notes_en.md # 精简英文版技术笔记（社区版）
+    └── technical_notes_zh.md # 本文档（详细中文版）
 ```
 
 ---

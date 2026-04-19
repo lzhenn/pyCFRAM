@@ -8,6 +8,9 @@ For the CFRAM methodology, please refer to:
 - Lu, J., and M. Cai, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. *Climate Dynamics*.
 - Cai, M., and J. Lu, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. Part II. *Climate Dynamics*.
 
+For CFRAM using RRTMG with aerosol (CFRAM-A framework origin):
+- Zhang, T., Deng, Y., Chen, J., Yang, S., Gao, P. and Zhang, H., 2022. Disentangling physical and dynamical drivers of the 2016/17 record-breaking warm winter in China. *Environmental Research Letters*, 17(7), 074024.
+
 ## Architecture
 
 ```
@@ -30,7 +33,7 @@ Python (decomposition + analysis)
 
 - Python 3.8+ with: `numpy`, `netCDF4`, `matplotlib`, `cartopy`, `scipy`
 - `gfortran` (for compiling RRTMG)
-- LAPACK/BLAS libraries (on HPC clusters, may require `module load lapack`; see `docs/technical_notes_zh.md` §13.9)
+- LAPACK/BLAS libraries (on HPC clusters, may require `module load lapack`; see [`docs/technical_notes_en.md`](docs/technical_notes_en.md) §9 or the expanded Chinese `technical_notes_zh.md` §13.9)
 
 ## Setup
 
