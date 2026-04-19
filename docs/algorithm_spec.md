@@ -5,8 +5,8 @@
 **References:**
 - Lu, J. and Cai, M. (2009). *Climate Dynamics*, 32, 873–885. [CFRAM Part I]
 - Cai, M. and Lu, J. (2009). *Climate Dynamics*, 32, 887–900. [CFRAM Part II]
-- **Zhang, T., Deng, Y., Chen, J., Yang, S., Gao, P. and Zhang, H. (2022). *Environmental Research Letters*, 17(7), 074024.** https://doi.org/10.1088/1748-9326/ac79c1 [**first CFRAM–RRTMG aerosol integration**; the Fortran engine and GOCART optical-property pipeline in pyCFRAM inherit from this work]
-- Wu, Q., Li, Q., Zhang, T., Sun, X., Yang, S. and Hu, X. (2025). *Journal of Climate*, 38(17), 4331–4349. [Eq. 1 of this paper is the canonical decomposition reproduced here]
+- **Zhang, T., Deng, Y., Chen, J., Yang, S., Gao, P. and Zhang, H. (2022). *Environmental Research Letters*, 17(7), 074024.** https://doi.org/10.1088/1748-9326/ac79c1 [**first CFRAM study to include explicit aerosol (CFRAM-A framework)**, with 5-species decomposition via off-line RRTMG v5 driven by MERRA-2; aerosol optics in that paper come from MAM4/CAM6]
+- Wu, Q., Li, Q., Zhang, T., Sun, X., Yang, S. and Hu, X. (2025). *Journal of Climate*, 38(17), 4331–4349. [Eq. 1 of this paper is the canonical decomposition reproduced here; reference Fortran code + GOCART optics pipeline inherited by pyCFRAM]
 
 ## 1. Overview
 
@@ -199,19 +199,25 @@ Both atmospheric layer and surface responses are solved together. Surface dT is 
 
 ## 9. Aerosol Optical Properties
 
-**Foundational integration:** the CFRAM–RRTMG aerosol coupling used here
-originates from Zhang et al. (2022, *ERL* 17:074024, https://doi.org/10.1088/1748-9326/ac79c1),
-which was the first study to embed explicit aerosol radiative treatment
-(GOCART optical tables → band-resolved AOD / SSA / g → RRTMG `iaer=10`) inside
-the CFRAM partial-radiative-perturbation framework. pyCFRAM keeps the same
-lookup-table interface and Fortran driver layout, and extends it with a
-per-species perturbation loop (§2, Phase 3) and Python-side Planck inversion.
+**Framework origin:** the extension of CFRAM to include an explicit aerosol
+partial-radiative-perturbation term — i.e. the **CFRAM-A** framework that
+pyCFRAM implements — was first introduced by Zhang et al. (2022, *ERL* 17:074024,
+https://doi.org/10.1088/1748-9326/ac79c1). That paper notes "the effect of
+aerosols ... has not been included in the previous CFRAM analysis" and
+adds a 5-species aerosol term (BC, OC, sulfate, sea salt, dust) computed via
+off-line RRTMG v5. pyCFRAM inherits this conceptual framework but uses a
+different optical-property source (see below).
 
 **Input:** MERRA-2 `M2I3NVAER` (13 mass mixing ratios on 72 model levels, kg/kg)
 merged into 6 pyCFRAM species — see `configs/defaults.yaml` for the species map.
+(Zhang et al. 2022 also drove their aerosols from MERRA-2 but used 5 species.)
 
-**Lookup tables:** GOCART `opticsBands_*.RRTMG.nc` under `fortran/data_prep/aerosol/`
-(bext/bsca/qext/qsca/g vs relative humidity and size index, per RRTMG band).
+**Lookup tables (pyCFRAM):** GOCART `opticsBands_*.RRTMG.nc` under
+`fortran/data_prep/aerosol/` (bext/bsca/qext/qsca/g vs relative humidity and
+size index, per RRTMG band). This lookup-table pipeline comes from the Wu et al.
+(2025) reference code and is **different** from the MAM4/CAM6 optical treatment
+used in Zhang et al. (2022); the two choices produce distinct species-level
+forcings even given identical MERRA-2 mixing ratios.
 
 **Computation** (implemented in `scripts/extract_full_field.py` and
 `scripts/run_parallel_python.py:compute_aerosol_column`, ported from the
