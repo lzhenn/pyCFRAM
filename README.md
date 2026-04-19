@@ -132,7 +132,6 @@ pyCFRAM/
 ├── scripts/        # Workflow scripts (extract → run → plot)
 ├── plotting/       # Matplotlib/Cartopy visualization
 ├── data/           # ERA5 data loader
-├── tests/          # Unit tests
 ├── configs/        # Experiment parameters (defaults.yaml)
 └── docs/           # Algorithm specification
 ```

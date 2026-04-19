@@ -168,10 +168,11 @@ of `lhflx/shflx` and flips the sign of `dT_cloud`.
   optical coupling, paper's path B does not. They differ by 10–30 % on
   individual terms but the `cloud + aerosol` sum correlation stays
   above 0.95.
-- **`core/radiation.py`, `core/decomposition.py`, and
-  `tests/test_radiation_prep.py`** are stale (import constants that no
-  longer exist). The actual pipeline doesn't use them — they are
-  pending cleanup.
+- (historical) `core/radiation.py`, `core/decomposition.py`,
+  `core/planck_matrix.py`, `core/cfram_runner.py`, `core/fortran_io.py`
+  and the `tests/` package were removed as dead code — they were
+  residue of an earlier pure-Python-port attempt and never used by the
+  current RRTMG-driven pipeline.
 
 ---
 

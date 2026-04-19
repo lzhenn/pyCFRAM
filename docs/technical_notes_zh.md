@@ -132,7 +132,6 @@ pyCFRAM/
 │   ├── era5_source.py              # ERA5DailySource：Wu et al. warm-period 方法全场版
 │   └── merra2_aerosol.py           # MERRA-2 气溶胶加载器（垂直 log-p + 水平双线性插值）
 ├── plotting/                # 可视化模块
-├── tests/                   # 单元测试
 └── docs/                    # 文档
     ├── algorithm_spec.md    # 算法规格说明
     ├── input_spec.md        # 输入数据格式规范

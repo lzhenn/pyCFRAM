@@ -17,18 +17,18 @@ and this project uses date-based milestones (no semver tags yet).
 ### Removed
 - `core/aerosol_optics.py` — dead module with no imports anywhere in the
   codebase.
+- `core/radiation.py`, `core/decomposition.py`, `core/planck_matrix.py`,
+  `core/cfram_runner.py`, `core/fortran_io.py` — residue of an earlier
+  pure-Python-port attempt. These modules imported constants
+  (`CLOUD_RE_ICE`, `CH4_PPMV`, `ICLD_ON`, `ERA5_PLEVELS`, …) that no
+  longer exist in `core/constants.py` and were not used by the current
+  RRTMG-driven pipeline.
+- `tests/` directory (only test was `test_radiation_prep.py`, which
+  imported the stale `core/radiation.py` and could not run). With the
+  whole package gone, the CI no longer needs `tests/` in its
+  `compileall` list.
 - Placeholder / gitignored-only directories `diagnostics/`, `tasks/`,
   `validation/`.
-
-### Known issues
-- `core/radiation.py` and `core/decomposition.py` import constants
-  (`CLOUD_RE_ICE`, `CH4_PPMV`, `ICLD_ON`, …) that no longer exist in
-  `core/constants.py`; `tests/test_radiation_prep.py` imports
-  `ERA5_PLEVELS` / `NLEV` which are also missing. These modules are not
-  used by the current pipeline (which calls Fortran via `scripts/
-  run_parallel_python.py`). A follow-up cleanup will either delete the
-  stale modules or restore the constants and re-enable the smoke test in
-  CI.
 
 ---
 

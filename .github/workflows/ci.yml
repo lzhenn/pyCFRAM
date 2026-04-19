@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint-and-smoke-test:
+  lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -27,7 +27,7 @@ jobs:
 
       - name: Python syntax check (compile all .py)
         run: |
-          python -m compileall -q core data scripts tests plotting run_case.py
+          python -m compileall -q core data scripts plotting run_case.py
 
       - name: Ruff lint (errors only, strict)
         run: |
