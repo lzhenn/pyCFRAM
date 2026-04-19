@@ -22,9 +22,17 @@ CFRAM 的核心思想是将观测到的温度变化 ΔT 分解为各物理过程
 
 ### 1.2 参考文献
 
-- Lu, J., and M. Cai, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. *Climate Dynamics*.
-- Cai, M., and J. Lu, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. Part II. *Climate Dynamics*.
-- Wu, Q., et al., 2025: Quantitative attribution of 2013 and 2022 extremely hot events in China. *Journal of Climate*, 38(17), 4331–4349.
+**CFRAM 方法论**
+- Lu, J., and M. Cai, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. Part I. *Climate Dynamics*, 32, 873–885.
+- Cai, M., and J. Lu, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. Part II. *Climate Dynamics*, 32, 887–900.
+
+**CFRAM-A 框架（首次将气溶胶纳入 CFRAM）**
+- Zhang, T., Y. Deng, J. Chen, S. Yang, P. Gao, and H. Zhang, 2022: Disentangling physical and dynamical drivers of the 2016/17 record-breaking warm winter in China. *Environmental Research Letters*, 17(7), 074024. https://doi.org/10.1088/1748-9326/ac79c1
+  首个把气溶胶作为独立辐射强迫项显式加入 CFRAM 分解的工作。论文原文："the effect of aerosols … has not been included in the previous CFRAM analysis"。给出 5 物种分解（BC/OC/Sulfate/Sea salt/Dust），用 MERRA-2 驱动 + 离线 RRTMG v5 做辐射传输。pyCFRAM 沿用这一 CFRAM-A 概念框架（含 RRTMG + MERRA-2 驱动），并扩展为 6 物种（OC 拆亲/疏水）的 in-RRTMG 扰动循环 + cloud LW/SW 拆分 + Python 端全矩阵 Planck 求逆。
+  注意：Zhang 2022 的气溶胶光学用 **MAM4/CAM6**；pyCFRAM 用 **GOCART 查找表**（承自 Wu 等 2025 参考代码），两者对同一 MERRA-2 混合比给出不同的物种级 forcing。
+
+**CFRAM 应用（极端事件归因）**
+- Wu, Q., Q. Li, T. Zhang, X. Sun, S. Yang, and X. Hu, 2025: Quantitative attribution of 2013 and 2022 extremely hot events in China: insights from a climate feedback–response perspective. *Journal of Climate*, 38(17), 4331–4349.
 
 ---
 

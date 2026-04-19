@@ -5,7 +5,7 @@
 **References:**
 - Lu, J. and Cai, M. (2009). *Climate Dynamics*, 32, 873–885. [CFRAM Part I]
 - Cai, M. and Lu, J. (2009). *Climate Dynamics*, 32, 887–900. [CFRAM Part II]
-- **Zhang, T., Deng, Y., Chen, J., Yang, S., Gao, P. and Zhang, H. (2022). *Environmental Research Letters*, 17(7), 074024.** https://doi.org/10.1088/1748-9326/ac79c1 [**first CFRAM study to include explicit aerosol (CFRAM-A framework)**, with 5-species decomposition via off-line RRTMG v5 driven by MERRA-2; aerosol optics in that paper come from MAM4/CAM6]
+- Zhang, T., Deng, Y., Chen, J., Yang, S., Gao, P. and Zhang, H. (2022). *Environmental Research Letters*, 17(7), 074024. https://doi.org/10.1088/1748-9326/ac79c1 [first CFRAM study to include explicit aerosol (CFRAM-A framework), with 5-species decomposition via off-line RRTMG v5 driven by MERRA-2; aerosol optics in that paper come from MAM4/CAM6]
 - Wu, Q., Li, Q., Zhang, T., Sun, X., Yang, S. and Hu, X. (2025). *Journal of Climate*, 38(17), 4331–4349. [Eq. 1 of this paper is the canonical decomposition reproduced here; reference Fortran code + GOCART optics pipeline inherited by pyCFRAM]
 
 ## 1. Overview

@@ -177,8 +177,8 @@ See [docs/input_spec.md](docs/input_spec.md) for the standard NetCDF input forma
 - Lu, J. and Cai, M., 2009. A new framework for isolating individual feedback processes in coupled general circulation climate models. Part I: Formulation. *Climate Dynamics*, 32, 873–885.
 - Cai, M. and Lu, J., 2009. A new framework for isolating individual feedback processes in coupled general circulation climate models. Part II: Method demonstrations and comparisons. *Climate Dynamics*, 32, 887–900.
 
-**CFRAM with aerosol (foundational: CFRAM-A framework)**
-- **Zhang, T., Deng, Y., Chen, J., Yang, S., Gao, P. and Zhang, H., 2022. Disentangling physical and dynamical drivers of the 2016/17 record-breaking warm winter in China. *Environmental Research Letters*, 17(7), 074024.** https://doi.org/10.1088/1748-9326/ac79c1
+**CFRAM with aerosol (CFRAM-A framework origin)**
+- Zhang, T., Deng, Y., Chen, J., Yang, S., Gao, P. and Zhang, H., 2022. Disentangling physical and dynamical drivers of the 2016/17 record-breaking warm winter in China. *Environmental Research Letters*, 17(7), 074024. https://doi.org/10.1088/1748-9326/ac79c1
   First CFRAM study to include an explicit aerosol radiative perturbation term: "the effect of aerosols ... has not been included in the previous CFRAM analysis" (Zhang et al. 2022). The work introduces the CFRAM-A variant with five-species aerosol decomposition (BC, OC, sulfate, sea salt, dust) driven by MERRA-2 reanalysis and off-line RRTMG v5 radiative transfer. pyCFRAM adopts the same conceptual framework (CFRAM-A, off-line RRTMG, MERRA-2 driving) and extends it with a 6-species in-RRTMG perturbation loop, cloud LW/SW split, and a fully Python-side Planck inversion. Note: the aerosol optical properties in Zhang et al. 2022 come from MAM4/CAM6; pyCFRAM uses GOCART lookup tables (matching the Wu et al. 2025 reference code used for reproduction).
 
 **CFRAM applications (extreme-event attribution)**
