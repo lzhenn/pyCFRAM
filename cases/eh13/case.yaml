@@ -31,6 +31,9 @@ input:
   perturbed_surf: input/perturbed_surf.nc
   nonrad_forcing: input/nonrad_forcing.nc
 
+radiation:
+  scheme: rrtmg               # RRTMG with full GOCART aerosol coupling
+
 plot:
   key_region:
     lon: [110, 122]

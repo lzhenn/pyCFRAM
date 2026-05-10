@@ -63,26 +63,98 @@ def get_nproc(case_cfg=None):
 def get_plev(case_cfg=None):
     """Get pressure levels (hPa, TOA→surface).
 
-    Per-case override: case.yaml may set `grid.pressure_levels` to use a
-    non-default vertical grid (e.g. 19-level CMIP6 plev for cesm2_4xco2_official).
-    Without override, returns the default 37-level grid.
+    Resolution order:
+      1. case.yaml `grid.pressure_levels` — explicit override (e.g. 17/19-plev
+         for CMIP6 sub-grids).
+      2. input NetCDF `lev` variable — auto-derive from the actual data so a
+         climlab 30-level RCE column or any other custom grid Just Works
+         without yaml duplication.
+      3. configs/defaults.yaml `grid.pressure_levels` — last-resort default.
     """
     if case_cfg and 'grid' in case_cfg and 'pressure_levels' in case_cfg['grid']:
         return np.array(case_cfg['grid']['pressure_levels'], dtype=np.float64)
+    # Auto-derive from input NetCDF lev variable when available.
+    if case_cfg:
+        bp = case_cfg.get('input', {}).get('base_pres')
+        if bp and os.path.exists(bp):
+            from netCDF4 import Dataset    # local import: avoid hard dep at import time
+            nc = Dataset(bp)
+            try:
+                plev = np.array(nc.variables['lev'][:], dtype=np.float64)
+            finally:
+                nc.close()
+            # Convention: pyCFRAM internal arrays are TOA→surface. NetCDF stores
+            # surface→TOA (matching CMIP6 plev). Detect and reverse if needed.
+            if plev[0] > plev[-1]:
+                plev = plev[::-1]
+            return plev
     return np.array(defaults()['grid']['pressure_levels'], dtype=np.float64)
 
 
-def get_executable(case_cfg=None):
-    """Get Fortran executable name. Defaults to cfram_rrtmg_1col (37 lev).
+# Mapping from logical radiation scheme name → built Fortran binary in fortran/.
+# Both engines run as single-column workers; nlev is inferred at runtime from the
+# size of data_prep/plev.dat, so no per-grid recompilation is needed.
+RADIATION_SCHEMES = {
+    'fu':    'cfram_fu_1col',
+    'rrtmg': 'cfram_rrtmg_1col',
+    # extend here when additional schemes are added (e.g. 'cam', 'lw_only')
+}
 
-    Per-case override via case.yaml `run.executable`, e.g. cfram_rrtmg_1col_n19
-    for the 19-level CMIP6 build.
+
+def get_executable(case_cfg=None):
+    """Resolve Fortran binary name for a case.
+
+    Resolution order:
+      1. case.yaml `radiation.scheme` (preferred, schema-driven)
+      2. case.yaml `run.executable`   (legacy escape hatch — direct binary name)
+      3. default: cfram_rrtmg_1col
+
+    Examples:
+        radiation:
+          scheme: fu                 # → cfram_fu_1col
+        radiation:
+          scheme: rrtmg              # → cfram_rrtmg_1col
+        run:
+          executable: my_custom_bin  # legacy: pass-through
     """
     if case_cfg:
+        scheme = case_cfg.get('radiation', {}).get('scheme')
+        if scheme:
+            if scheme not in RADIATION_SCHEMES:
+                raise ValueError(
+                    "Unknown radiation.scheme '%s'. Known: %s"
+                    % (scheme, sorted(RADIATION_SCHEMES))
+                )
+            return RADIATION_SCHEMES[scheme]
         exe = case_cfg.get('run', {}).get('executable')
         if exe:
             return exe
     return 'cfram_rrtmg_1col'
+
+
+def get_output_terms(case_cfg=None):
+    """List of dT_*/frc_* terms to write to cfram_result.nc, or None for all.
+
+    Per-case via case.yaml `radiation.output_terms`. Useful for idealized
+    experiments (e.g. clear-sky climlab RCE) where only a subset of partial
+    perturbations are physically meaningful — listing only `[co2, q]` strips
+    the always-zero `cloud / aerosol / ts / albedo / o3 / solar` rows from
+    the output NetCDF.
+
+    Note: derived dynamics terms (`dry/atmdyn/sfcdyn/ocndyn/observed/full/warm`
+    plus `lhflx/shflx`) are *not* filtered — they are physically required for
+    energy-balance closure and always written.
+
+    Returns
+    -------
+    list[str] or None
+        None means "write everything" (default behavior).
+    """
+    if case_cfg:
+        terms = case_cfg.get('radiation', {}).get('output_terms')
+        if terms:
+            return list(terms)
+    return None
 
 
 def get_aerosol_map():

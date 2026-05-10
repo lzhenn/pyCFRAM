@@ -11,6 +11,9 @@ input:
   perturbed_surf: input/perturbed_surf.nc
   nonrad_forcing: input/nonrad_forcing.nc
 
+radiation:
+  scheme: rrtmg               # default RRTMG (collaborator's CESM2 setup)
+
 plot:
   key_region:
     lon: [0, 360]

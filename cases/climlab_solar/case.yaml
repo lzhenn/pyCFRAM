@@ -11,5 +11,9 @@ input:
   perturbed_surf: input/perturbed_surf.nc
   # No nonrad_forcing: RCE has no LH/SH (treated as Q_dyn implicitly)
 
+radiation:
+  scheme: rrtmg               # default RRTMG engine (cfram_rrtmg_1col)
+  output_terms: [solar, q]    # clear-sky RCE +1% solar — only solar+q+derived terms
+
 run:
-  nproc: 1            # 1×1 grid, no benefit from parallel
+  nproc: auto                 # auto-caps to 1 for 1×1 grid

@@ -17,7 +17,7 @@ from netCDF4 import Dataset
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.config import load_case, defaults, get_plev, get_aerosol_map, get_nproc, \
-    get_fortran_dir, get_lookup_dir, get_executable, PROJECT_ROOT
+    get_fortran_dir, get_lookup_dir, get_executable, get_output_terms, PROJECT_ROOT
 from core.constants import NBND_LW, NBND_SW
 
 # Default plev / nlev (used until main() overrides with case-specific values).
@@ -457,15 +457,20 @@ def main():
     OUTDIR = cfg['_output_dir']
     os.makedirs(OUTDIR, exist_ok=True)
     nproc = args.nproc or get_nproc(cfg)
-    args.nproc = nproc
 
     # Per-case plev / nlev (default 37, override via case.yaml grid.pressure_levels).
     global FORTRAN_PLEV, NLEV
     FORTRAN_PLEV = get_plev(cfg)
     NLEV = len(FORTRAN_PLEV)
 
+    # Optional: case.yaml radiation.output_terms restricts which dT/frc
+    # variables are written to cfram_result.nc. None = write all (default).
+    output_terms = get_output_terms(cfg)
+
     print("=== Python parallel CFRAM: %s, %d procs (nlev=%d) ===" %
           (cfg.get('case_name', args.case), nproc, NLEV))
+    if output_terms is not None:
+        print("Output filter active: writing only dT/frc for %s" % output_terms)
 
     # Pre-built single-column executable (nlat=1, nlon=1, nlev=NLEV).
     exe_name = get_executable(cfg)
@@ -592,15 +597,25 @@ def main():
     else:
         print("No non-radiative forcing provided (radiative decomposition only)")
 
-    print("Grid: %d x %d = %d points" % (nlat, nlon, nlat * nlon))
+    n_cells = nlat * nlon
+    print("Grid: %d x %d = %d points" % (nlat, nlon, n_cells))
 
     # Build task list
     tasks = [(i, j) for i in range(nlat) for j in range(nlon)]
 
-    # Run parallel
+    # Auto-cap workers at the grid size: spawning 200 workers for a 1×1
+    # idealized RCE column wastes init time and process slots. For the
+    # single-cell case we skip multiprocessing.Pool entirely and call
+    # process_column synchronously — useful for climlab validation.
+    nproc_eff = max(1, min(nproc, n_cells))
+    if nproc_eff != nproc:
+        print("Auto-capping nproc: requested %d → using %d (grid has only %d cells)"
+              % (nproc, nproc_eff, n_cells))
+    args.nproc = nproc_eff
+
+    # Run
     import time
     t0 = time.time()
-    print("Starting %d workers..." % args.nproc)
 
     # Result arrays
     terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm',
@@ -621,24 +636,37 @@ def main():
     # Bulk radiative + per-species forcings stored in NetCDF
     frc_out = {t: np.full((NLEV+1, nlat, nlon), np.nan) for t in terms + fortran_aer_species}
 
-    done = 0
-    with Pool(args.nproc, initializer=init_worker, initargs=(data,)) as pool:
-        for ilat, ilon, result in pool.imap_unordered(process_column, tasks, chunksize=4):
-            for t in terms:
+    def _absorb(ilat, ilon, result):
+        for t in terms:
+            dT_out[t][:, ilat, ilon] = result['dT_'+t]
+            frc_out[t][:, ilat, ilon] = result['frc_'+t]
+        for t in dyn_terms + nonrad_terms + all_species:
+            if 'dT_'+t in result:
                 dT_out[t][:, ilat, ilon] = result['dT_'+t]
+        for t in fortran_aer_species:
+            if 'frc_'+t in result:
                 frc_out[t][:, ilat, ilon] = result['frc_'+t]
-            for t in dyn_terms + nonrad_terms + all_species:
-                if 'dT_'+t in result:
-                    dT_out[t][:, ilat, ilon] = result['dT_'+t]
-            for t in fortran_aer_species:
-                if 'frc_'+t in result:
-                    frc_out[t][:, ilat, ilon] = result['frc_'+t]
-            done += 1
-            if done % 200 == 0:
-                elapsed = time.time() - t0
-                rate = done / elapsed
-                eta = (len(tasks) - done) / rate
-                print("  %d/%d done (%.1f pts/s, ETA %.0fs)" % (done, len(tasks), rate, eta))
+
+    done = 0
+    if n_cells == 1:
+        # Single-cell short-circuit: avoid mp.Pool spin-up. Useful for climlab
+        # 1×1 RCE validation cases.
+        print("Single-cell synchronous run (no multiprocessing)")
+        init_worker(data)
+        ilat, ilon, result = process_column(tasks[0])
+        _absorb(ilat, ilon, result)
+        done = 1
+    else:
+        print("Starting %d workers..." % args.nproc)
+        with Pool(args.nproc, initializer=init_worker, initargs=(data,)) as pool:
+            for ilat, ilon, result in pool.imap_unordered(process_column, tasks, chunksize=4):
+                _absorb(ilat, ilon, result)
+                done += 1
+                if done % 200 == 0:
+                    elapsed = time.time() - t0
+                    rate = done / elapsed
+                    eta = (len(tasks) - done) / rate
+                    print("  %d/%d done (%.1f pts/s, ETA %.0fs)" % (done, len(tasks), rate, eta))
 
     elapsed = time.time() - t0
     print("Completed in %.1f seconds (%.1f pts/s)" % (elapsed, len(tasks) / elapsed))
@@ -662,10 +690,31 @@ def main():
         """TOA→sfc atm + sfc → sfc→TOA atm + ground (matches lev order)."""
         return np.concatenate([arr[:NLEV][::-1], arr[NLEV:NLEV + 1]], axis=0)
 
+    # Apply output_terms filter: if set, restrict which radiative dT/frc are
+    # written (always keep dyn / nonrad / lhflx / shflx — those are physically
+    # required for closure). Idealized cases (clear-sky climlab RCE) use this
+    # to drop always-zero `cloud / aerosol / o3 / albedo / solar` rows.
+    REQUIRED_DERIVED = set(dyn_terms + nonrad_terms)   # never filtered
+    if output_terms is not None:
+        allowed_rad = set(output_terms)
+    else:
+        allowed_rad = None   # write everything
+
+    def _allowed(t):
+        if t in REQUIRED_DERIVED:
+            return True
+        if allowed_rad is None:
+            return True
+        return t in allowed_rad
+
     for t in all_dT_terms:
+        if not _allowed(t):
+            continue
         v = nc.createVariable('dT_'+t, 'f8', ('lev', 'lat', 'lon'))
         v[:] = reorder_for_save(dT_out[t])
     for t in terms + fortran_aer_species:
+        if not _allowed(t):
+            continue
         if t in frc_out:
             v = nc.createVariable('frc_'+t, 'f8', ('lev', 'lat', 'lon'))
             v[:] = reorder_for_save(frc_out[t])

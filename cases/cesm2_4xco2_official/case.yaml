@@ -26,9 +26,10 @@ input:
   perturbed_surf: input/perturbed_surf.nc
   nonrad_forcing: input/nonrad_forcing.nc
 
+radiation:
+  scheme: rrtmg               # default RRTMG (handles any nlev via plev.dat)
+
 run:
-  # Single binary handles any nlev via plev.dat (Fortran reads file size).
-  # No need to specify executable here; defaults to cfram_rrtmg_1col.
   nproc: auto
 
 plot:

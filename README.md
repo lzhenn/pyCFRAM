@@ -41,18 +41,24 @@ Python (decomposition + analysis)
 
 ### Selecting the radiation engine
 
-Each case.yaml's `run.executable` field selects which Fortran binary to run. Examples:
+Each case.yaml has a `radiation:` block:
 
 ```yaml
-# case.yaml
+radiation:
+  scheme: fu                     # fu | rrtmg (extensible — see core/config.RADIATION_SCHEMES)
+  output_terms: [co2, q]         # optional: write only these dT/frc rows to NetCDF
+                                 # (omit for "everything"; useful for clear-sky RCE
+                                 # where cloud / aerosol / o3 rows are always zero)
+
 run:
-  executable: cfram_rrtmg_1col       # RRTMG, 37-plev (default)
-  # or:
-  # executable: cfram_rrtmg_1col_n19 # RRTMG, 19-plev (CMIP6 plev)
-  # executable: cfram_fu_1col        # Fu, runtime nlev (any vertical grid)
+  nproc: auto                    # auto-caps to grid size (1×1 → sync, no Pool spin-up)
 ```
 
-The Fu binary infers `nlev` at runtime from the size of `data_prep/plev.dat`, so a single Fu binary handles 17/19/37/… plev cases without recompilation.
+The legacy escape hatch `run.executable: <binary_name>` is still honoured. Both `cfram_rrtmg_1col` and `cfram_fu_1col` infer `nlev` at runtime from the size of `data_prep/plev.dat`, so a single binary per engine handles any vertical grid (17/19/30/37/...) without recompilation. `get_plev()` resolves levels by:
+
+1. `case.yaml` `grid.pressure_levels` (explicit override)
+2. Input NetCDF `lev` variable (auto-derive — works for climlab 30-level, CMIP6 19-level, ...)
+3. `configs/defaults.yaml` (last-resort fallback)
 
 ## Prerequisites
 
@@ -185,6 +191,26 @@ python3 scripts/plot_13panel_polar.py  cesm2_4xco2_official_17p_fu
 
 **Validation against the Fortran CFRAM benchmark (collaborator's CESM2 run):**
 single-column dual-MC validation at (159, 144) reproduces `partial_T_1.grd` for all 13 dT terms within ≤ 0.003 K when fed identical `.dat` inputs. Global-field discrepancy in DYN/ATM/OCH panels vs OLD's `north.jpg` is **not** a code bug — it is traceable to the OLD reference run using a corrupted O3 input (the collaborator's `o3_base.dat` and `o3_warm.dat` are byte-identical copies of `hus_base.dat` (md5 `1cefb325...`); see `session_log.md` for the full diagnosis).
+
+## CliMLab Single-Column RCE Validation
+
+Idealized clear-sky radiative-convective equilibrium decomposition for sanity-checking pyCFRAM's CFRAM math against a known-correct reference. Provides a 1×1 column where ECS ≈ 4-5 K can be verified to close energy balance within ~1%.
+
+```bash
+# 1. Run climlab RCE at 1×CO2 (348 ppm) and 4×CO2 (1392 ppm). Writes climlab
+#    native NetCDFs + pyCFRAM standard input directly into both case dirs.
+/path/to/conda/python experiments/climlab_validation/run_rce_4xco2.py
+
+# 2. Decompose with each radiation engine (single-cell auto-detected)
+python3 run_case.py climlab_4xco2     --step run     # RRTMG  → ~1.5 s
+python3 run_case.py climlab_4xco2_fu  --step run     # Fu     → ~2 s
+```
+
+Verified closure (`dT_co2 + dT_q + dT_dry ≈ dT_observed`):
+- climlab_4xco2 (RRTMG): residual −0.05 K (1.1%)
+- climlab_4xco2_fu (Fu): residual +0.05 K (1.2%)
+
+The two engines differ by ~10-15 % on individual `dT_co2` / `dT_q` magnitudes (different RT solvers) but agree on the total ECS-equivalent response to within numerical noise — a useful cross-check independent of the OLD CFRAM reference.
 
 ## Project Structure
 

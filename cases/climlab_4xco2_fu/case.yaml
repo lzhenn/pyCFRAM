@@ -1,0 +1,19 @@
+# climlab clear-sky RCE, 1×CO2 → 4×CO2 — Fu radiation variant.
+#
+# Same input as cases/climlab_4xco2/ (climlab output is engine-independent;
+# input/ files are symlinked there by run_rce_4xco2.py).
+case_name: climlab_4xco2_fu
+description: "1D climlab clear-sky RCE, 1×CO2 → 4×CO2, Fu radiation"
+
+input:
+  base_pres:      input/base_pres.nc
+  base_surf:      input/base_surf.nc
+  perturbed_pres: input/perturbed_pres.nc
+  perturbed_surf: input/perturbed_surf.nc
+
+radiation:
+  scheme: fu                 # Fu radiation engine (cfram_fu_1col)
+  output_terms: [co2, q]     # clear-sky RCE: same as climlab_4xco2
+
+run:
+  nproc: auto                # auto-caps to 1 for 1×1 grid

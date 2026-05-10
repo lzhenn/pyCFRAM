@@ -8,6 +8,9 @@ input:
   perturbed_pres: input/perturbed_pres.nc
   perturbed_surf: input/perturbed_surf.nc
 
+radiation:
+  scheme: fu                  # Fu radiation engine (cfram_fu_1col)
+  output_terms: [solar, q]    # clear-sky RCE +1% solar — only solar+q+derived terms are meaningful
+
 run:
-  executable: cfram_fu_1col   # Fu radiation, no aerosol partials
-  nproc: 1
+  nproc: auto                 # auto-caps to 1 for 1×1 grid

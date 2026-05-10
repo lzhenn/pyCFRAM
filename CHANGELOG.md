@@ -16,6 +16,39 @@ and this project uses date-based milestones (no semver tags yet).
 
 ---
 
+## 2026-05-10 — `radiation:` schema + climlab single-column validation
+
+### Added
+- **`radiation:` block in `case.yaml`** — declarative radiation-engine selection
+  (`scheme: fu | rrtmg`, extensible via `core/config.RADIATION_SCHEMES`).
+  Replaces the engine-specific `run.executable` field (legacy still honoured).
+- **`radiation.output_terms` filter** — list of `dT/frc` rows to write to
+  `cfram_result.nc`. Idealized cases (clear-sky RCE) use this to drop the
+  always-zero cloud / aerosol / o3 / albedo rows. Derived dynamics terms
+  (`dry / atmdyn / sfcdyn / ocndyn / lhflx / shflx`) are *not* filtered —
+  they are physically required for closure.
+- **Auto-cap `nproc` by grid size** — single-cell cases (climlab RCE, etc.)
+  short-circuit `multiprocessing.Pool` and call `process_column` synchronously,
+  saving ~0.5-1 s of pool spin-up.
+- **`get_plev()` auto-derives from input NetCDF** — third resolution path
+  alongside `case.yaml grid.pressure_levels` and `defaults.yaml`. A climlab
+  30-level RCE column or any custom grid Just Works without yaml duplication.
+- **CliMLab 4×CO2 single-column validation case** —
+  `experiments/climlab_validation/run_rce_4xco2.py` runs clear-sky RCE at
+  348 ppm and 1392 ppm CO2 (climlab default 30-sigma grid) and writes
+  pyCFRAM standard 1×1 input directly. New cases `cases/climlab_4xco2/`
+  (RRTMG) and `cases/climlab_4xco2_fu/` (Fu) decompose the ΔTs ≈ +4.6 K
+  ECS-equivalent response. Verified closure
+  `dT_co2 + dT_q + dT_dry ≈ dT_observed` within 1.2 % residual on both
+  engines — a clean independent sanity check of pyCFRAM's CFRAM math.
+
+### Changed
+- All existing case.yaml migrated from `run.executable` to
+  `radiation.scheme`: eh13, eh22, cesm2_4xco2{,_fu,_official,_official_fu,
+  _official_17p_fu}, climlab_solar{,_fu}.
+
+---
+
 ## 2026-05-10 — Fu radiation dual-MC fix + CESM2 4×CO2 workflow
 
 ### Added

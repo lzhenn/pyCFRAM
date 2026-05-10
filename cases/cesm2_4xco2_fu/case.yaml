@@ -11,8 +11,10 @@ input:
   perturbed_surf: ../cesm2_4xco2/input/perturbed_surf.nc
   nonrad_forcing: ../cesm2_4xco2/input/nonrad_forcing.nc
 
+radiation:
+  scheme: fu                  # Fu radiation engine (cfram_fu_1col)
+
 run:
-  executable: cfram_fu_1col   # Fu radiation single-column binary
   nproc: auto
 
 plot:

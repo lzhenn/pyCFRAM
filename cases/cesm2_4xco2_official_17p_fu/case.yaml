@@ -20,8 +20,10 @@ grid:
   pressure_levels: [10, 20, 30, 50, 70, 100, 150, 200, 250, 300,
                     400, 500, 600, 700, 850, 925, 1000]
 
+radiation:
+  scheme: fu                # Fu radiation engine (cfram_fu_1col)
+
 run:
-  executable: cfram_fu_1col
   nproc: auto
 
 plot:
