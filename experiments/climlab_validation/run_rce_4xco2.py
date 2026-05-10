@@ -61,9 +61,16 @@ def save_pycfram_input(model, h2o, rad, co2_ppm, out_pres, out_surf):
     Tatm_top2sfc = np.array(model.Tatm).flatten()
     Ts = float(np.array(model.Ts).flat[0])
     q_top2sfc = np.array(h2o.q).flatten()
-    # O3 is part of RRTMG default absorber set. In pure RCE we don't perturb
-    # O3, but pyCFRAM still expects an O3 field — write the climlab default.
-    o3_top2sfc = np.array(rad.absorber_vmr['O3']).flatten()
+    # Unit conversion: climlab's `rad.absorber_vmr['O3']` is **volume mixing
+    # ratio (mol/mol)**, but pyCFRAM Fortran (`cas_fu_radiation.f` line 28:
+    # "po(nv1) ozone mixing ratio (kg/kg)") expects **mass mixing ratio**.
+    # Without this conversion, pyCFRAM sees O3 ≈ 40 % below the real value
+    # (vmr × M_O3/M_air, where 48.00/28.97 ≈ 1.657). It cancels out in
+    # frc_X = R(warm) − R(base) since base = warm in O3, but `drdt` is
+    # computed in the wrong-O3 background → ~10 % bias in dT_X magnitudes,
+    # observable as ~0.5–1 K residual in the closure check.
+    M_O3, M_AIR = 48.00, 28.97
+    o3_top2sfc = np.array(rad.absorber_vmr['O3']).flatten() * (M_O3 / M_AIR)
 
     # Reverse to surface→TOA for NetCDF storage
     plev_sfc2top = plev_top2sfc[::-1]
@@ -134,6 +141,15 @@ def main():
     for label, co2_ppm, max_days, (pres_name, surf_name) in cases:
         print('\n===== Building model: CO2 = %.1f ppm (%s) =====' % (co2_ppm, label))
         model, h2o, rad, _conv = build_model(co2_ppm, name='RCE_' + label)
+        # Quick-fix step (D): override climlab's RRTMG default CH4/N2O to match
+        # pyCFRAM Fortran hardcoded values (`cfram_fu_1col.f90:104-105`,
+        # `cfram_rrtmg.f90` ditto). climlab default = 1.65 / 0.306 ppmv;
+        # pyCFRAM hardcoded = 1.6 / 0.28 ppmv. Keeping the climate's absorber
+        # background identical to what pyCFRAM's drdt is computed in lets the
+        # CFRAM closure check (Σ_X dT_X ≈ ΔT_obs) hit float-precision instead
+        # of a 3–9 % residual due to drdt-vs-rad-state mismatch.
+        rad.absorber_vmr['CH4'] = 1.6e-6
+        rad.absorber_vmr['N2O'] = 0.28e-6
         elapsed, imbalance = integrate_to_equilibrium(
             model, rad, max_days=max_days, tol=0.02, chunk=20,
         )

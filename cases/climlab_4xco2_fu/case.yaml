@@ -13,7 +13,8 @@ input:
 
 radiation:
   scheme: fu                 # Fu radiation engine (cfram_fu_1col)
-  output_terms: [co2, q]     # clear-sky RCE: same as climlab_4xco2
+  output_terms: [co2, q, ts] # clear-sky RCE: same as climlab_4xco2 (ts is
+                             # surface-T radiative response, required for closure)
 
 run:
   nproc: auto                # auto-caps to 1 for 1×1 grid

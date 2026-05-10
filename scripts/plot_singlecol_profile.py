@@ -1,20 +1,27 @@
 #!/usr/bin/env python3
-"""4-subplot vertical-profile decomposition figure for 1×1 single-column cases.
+"""5-subplot vertical-profile decomposition figure for 1×1 single-column cases.
+
+Identity (clear-sky climlab RCE):
+    dT_obs ≈ dT_co2 + dT_q + dT_ts + dT_dyn_proper
+where dT_dyn_proper = dT_obs − Σ(radiative) is the genuine non-radiative
+residual (convective adjustment + transport — by construction closes exactly).
 
 Layout
 ------
-[1] Total       dT_observed (single line, RT-independent) +
-                Σ(dT_co2 + dT_q + dT_dry) overlay per engine — closure check
-[2] CO2 forcing dT_co2 — RRTMG vs Fu overlay
-[3] WV feedback dT_q   — RRTMG vs Fu overlay
-[4] Dry / dyn   dT_dry — RRTMG vs Fu overlay
+[1] Total ΔT  : dT_observed (RT-independent) + Σ(co2+q+ts) per engine
+                (lines should overlap closely; gap = `dT_dyn_proper`)
+[2] CO2       : dT_co2 — RRTMG vs Fu
+[3] WV        : dT_q   — RRTMG vs Fu
+[4] Surf-T    : dT_ts  — RRTMG vs Fu  (surface-emission radiative response)
+[5] Dynamics  : dT_dyn_proper = dT_obs − (co2+q+ts) — RRTMG vs Fu
+                (convective heat redistribution + LH/SH residual; column
+                integral ≈ 0 in pure RCE)
 
 Usage
 -----
     python3 scripts/plot_singlecol_profile.py climlab_4xco2 climlab_4xco2_fu
 
-The first case is treated as "primary" (its figures/ dir gets the output).
-If only one case is given, only one curve per panel is drawn.
+The first case is "primary" (its figures/ dir gets the output).
 """
 import os
 import sys
@@ -51,7 +58,7 @@ def _load(case_name):
         return np.array(nc.variables[name][:, 0, 0])
 
     data = {k: get('dT_' + k) for k in
-            ['observed', 'co2', 'q', 'dry', 'atmdyn']}
+            ['observed', 'co2', 'q', 'ts', 'dry', 'atmdyn']}
     nc.close()
     return cfg, lev, nlev, scheme, data
 
@@ -102,26 +109,32 @@ def main(case_names):
     primary = cases[0]
     desc = primary['cfg'].get('description', primary['name'])
 
-    fig, axes = plt.subplots(1, 4, figsize=(15, 5), sharey=True)
+    fig, axes = plt.subplots(1, 5, figsize=(19, 5), sharey=True)
 
-    # --- Panel 1: Total (dT_observed + closure check Σ(co2+q+dry) per engine) ---
+    # --- Panel 1: Total — dT_observed + Σ(co2+q+ts) per engine ---
+    # If dT_ts is missing (legacy build), Σ degenerates to (co2+q+dry).
     obs = primary['data']['observed']
     panel1 = [('observed (input)', 'black', obs, '-')]
     for c in cases:
         sch = c['scheme']
-        s = (c['data']['co2'] + c['data']['q'] + c['data']['dry'])
-        panel1.append(('Σ %s = co2+q+dry' % SCHEME_LABEL.get(sch, sch),
-                       SCHEME_COLOR.get(sch, 'gray'), s, '--'))
-    _plot_panel(axes[0], '(a) Total ΔT  (closure check)',
+        ts = c['data'].get('ts')
+        if ts is not None:
+            s = c['data']['co2'] + c['data']['q'] + ts
+            label = 'Σ %s = co2+q+ts' % SCHEME_LABEL.get(sch, sch)
+        else:
+            s = c['data']['co2'] + c['data']['q'] + c['data']['dry']
+            label = 'Σ %s = co2+q+dry (legacy)' % SCHEME_LABEL.get(sch, sch)
+        panel1.append((label, SCHEME_COLOR.get(sch, 'gray'), s, '--'))
+    _plot_panel(axes[0], '(a) Total ΔT  (radiative closure)',
                 lev_ref, atm, sfc, panel1)
     axes[0].set_ylabel('Pressure (hPa)', fontsize=10)
     axes[0].legend(loc='best', fontsize=8, framealpha=0.9)
 
-    # --- Panels 2–4: dT_co2, dT_q, dT_dry per engine ---
+    # --- Panels 2–4: dT_co2, dT_q, dT_ts per engine ---
     for col, (key, label) in enumerate([
         ('co2', '(b) ΔT$_{CO_2}$'),
         ('q',   '(c) ΔT$_{WV}$'),
-        ('dry', '(d) ΔT$_{dry}$  (convective + dyn)'),
+        ('ts',  '(d) ΔT$_{T_s}$  (surface T radiative response)'),
     ], start=1):
         curves = []
         for c in cases:
@@ -131,6 +144,20 @@ def main(case_names):
                            SCHEME_COLOR.get(sch, 'gray'), dT, '-'))
         _plot_panel(axes[col], label, lev_ref, atm, sfc, curves)
         axes[col].legend(loc='best', fontsize=8, framealpha=0.9)
+
+    # --- Panel 5: True non-radiative residual ΔT_dyn = dT_obs − (co2+q+ts) ---
+    panel5 = []
+    for c in cases:
+        sch = c['scheme']
+        ts = c['data'].get('ts')
+        if ts is None:
+            continue
+        dyn = c['data']['observed'] - c['data']['co2'] - c['data']['q'] - ts
+        panel5.append((SCHEME_LABEL.get(sch, sch),
+                       SCHEME_COLOR.get(sch, 'gray'), dyn, '-'))
+    _plot_panel(axes[4], '(e) ΔT$_{dyn}$  (convective + transport)',
+                lev_ref, atm, sfc, panel5)
+    axes[4].legend(loc='best', fontsize=8, framealpha=0.9)
 
     # --- Title ---
     title = ('pyCFRAM single-column decomposition: %s' %

@@ -19,10 +19,11 @@ input:
 
 radiation:
   scheme: rrtmg              # default RRTMG engine (cfram_rrtmg_1col)
-  output_terms: [co2, q]     # clear-sky RCE: only CO2 + WV are perturbed;
-                             # cloud / aerosol / o3 / albedo / solar / ts
-                             # rows are always zero and would be misleading
-                             # noise in cfram_result.nc.
+  output_terms: [co2, q, ts] # clear-sky RCE: CO2 + WV are perturbed; ts is
+                             # the surface-T radiative response (key for
+                             # closure: Σ_X dT_X = dT_obs requires dT_ts).
+                             # cloud / aerosol / o3 / albedo / solar rows are
+                             # always zero so they're filtered.
 
 run:
   nproc: auto                # auto-caps to 1 for 1×1 grid

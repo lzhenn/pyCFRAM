@@ -54,13 +54,14 @@ program cfram_fu
   real, allocatable :: rad_co2(:),  rad_q(:),    rad_o3(:)
   real, allocatable :: rad_solar(:),rad_albedo(:),rad_cloud(:)
   real, allocatable :: lw_cloud(:), sw_cloud(:)
+  real, allocatable :: rad_ts(:)     ! case 5: ts-only perturbation (atm at base, sfc T at warm)
 
   ! Forcing outputs (length nv1 = nlev+1; index nv1 = surface)
   real, allocatable :: frc_warm_o(:), frc_co2_o(:), frc_q_o(:)
   real, allocatable :: frc_o3_o(:),  frc_solar_o(:), frc_albedo_o(:)
-  real, allocatable :: frc_cloud_o(:), frc_full_o(:)
+  real, allocatable :: frc_cloud_o(:), frc_full_o(:), frc_ts_o(:)
   real, allocatable :: frc_cloud_lw_o(:), frc_cloud_sw_o(:)
-  real, allocatable :: frc_zero(:)   ! for frc_aerosol/frc_ts (unused but required)
+  real, allocatable :: frc_zero(:)   ! for frc_aerosol (unused but required)
 
   ! Planck matrix
   real, allocatable :: drdt(:,:), drdt_inv(:,:)
@@ -141,9 +142,10 @@ program cfram_fu
   allocate(rad_co2(nlev+1),   rad_q(nlev+1),    rad_o3(nlev+1))
   allocate(rad_solar(nlev+1), rad_albedo(nlev+1),rad_cloud(nlev+1))
   allocate(lw_cloud(nlev+1),  sw_cloud(nlev+1))
+  allocate(rad_ts(nlev+1))
   allocate(frc_warm_o(nlev+1), frc_co2_o(nlev+1), frc_q_o(nlev+1))
   allocate(frc_o3_o(nlev+1),   frc_solar_o(nlev+1), frc_albedo_o(nlev+1))
-  allocate(frc_cloud_o(nlev+1),frc_full_o(nlev+1))
+  allocate(frc_cloud_o(nlev+1),frc_full_o(nlev+1), frc_ts_o(nlev+1))
   allocate(frc_cloud_lw_o(nlev+1), frc_cloud_sw_o(nlev+1))
   allocate(frc_zero(nlev+1))
   allocate(drdt(nlev+1,nlev+1), drdt_inv(nlev+1,nlev+1))
@@ -286,7 +288,7 @@ program cfram_fu
      case (2); rad_co2  = rad_pert
      case (3); rad_q    = rad_pert
      case (4); rad_o3   = rad_pert
-     case (5); ! ts only — not used as separate frc, ts is in 'warm' lump
+     case (5); rad_ts   = rad_pert    ! sfc T perturbation only (atm at base)
      case (6); rad_solar  = rad_pert
      case (7); rad_albedo = rad_pert
      case (8); rad_cloud = rad_pert; lw_cloud = lw_pert; sw_cloud = sw_pert
@@ -308,7 +310,7 @@ program cfram_fu
   ! magnitude under-estimation and DYN noise.
   frc_co2_o = 0.0;     frc_q_o = 0.0;       frc_o3_o = 0.0
   frc_solar_o = 0.0;   frc_albedo_o = 0.0;  frc_cloud_o = 0.0
-  frc_warm_o = 0.0;    frc_full_o = 0.0
+  frc_warm_o = 0.0;    frc_full_o = 0.0;    frc_ts_o = 0.0
   frc_cloud_lw_o = 0.0; frc_cloud_sw_o = 0.0
 
   ! --- partial cases: both rad_X and rad_base have nv = nv_base_used ---
@@ -320,6 +322,7 @@ program cfram_fu
      frc_albedo_o(k)   = rad_albedo(k) - rad_base(k)
      frc_cloud_o(k)    = rad_cloud(k)  - rad_base(k)
      frc_warm_o(k)     = rad_warm(k)   - rad_base(k)
+     frc_ts_o(k)       = rad_ts(k)     - rad_base(k)
      frc_cloud_lw_o(k) = lw_cloud(k)   - lw_base(k)
      frc_cloud_sw_o(k) = sw_cloud(k)   - sw_base(k)
   end do
@@ -331,6 +334,7 @@ program cfram_fu
   frc_albedo_o(nlev+1)   = rad_albedo(nv1_base) - rad_base(nv1_base)
   frc_cloud_o(nlev+1)    = rad_cloud(nv1_base)  - rad_base(nv1_base)
   frc_warm_o(nlev+1)     = rad_warm(nv1_base)   - rad_base(nv1_base)
+  frc_ts_o(nlev+1)       = rad_ts(nv1_base)     - rad_base(nv1_base)
   frc_cloud_lw_o(nlev+1) = lw_cloud(nv1_base)   - lw_base(nv1_base)
   frc_cloud_sw_o(nlev+1) = sw_cloud(nv1_base)   - sw_base(nv1_base)
 
@@ -449,7 +453,7 @@ program cfram_fu
   call write_frc('data_output/frc_full.dat',     frc_full_o,     nlev+1)
   call write_frc('data_output/frc_cloud_lw.dat', frc_cloud_lw_o, nlev+1)
   call write_frc('data_output/frc_cloud_sw.dat', frc_cloud_sw_o, nlev+1)
-  call write_frc('data_output/frc_ts.dat',       frc_zero,       nlev+1)
+  call write_frc('data_output/frc_ts.dat',       frc_ts_o,       nlev+1)
 
   ! drdt_inv: header (nlayer=nv:int8) + body ((nv+1)*(nv+1) doubles, F-order)
   open(98, file='data_output/drdt_inv.dat', access='sequential', &
