@@ -1,0 +1,21 @@
+# CESM2 4×CO2 — Fu radiation (apple-to-apple with OLD CFRAM raw/CFRAM.zip)
+# Reuses cesm2_4xco2 input (collaborator's 37-level interpolated CMIP6 raw).
+case_name: CESM2_4xCO2_fu
+description: "CESM2 4xCO2, Fu radiation, no aerosol partials (matches OLD CFRAM scheme)"
+
+# Symlink-via-relative-path to reuse cesm2_4xco2 input
+input:
+  base_pres:      ../cesm2_4xco2/input/base_pres.nc
+  base_surf:      ../cesm2_4xco2/input/base_surf.nc
+  perturbed_pres: ../cesm2_4xco2/input/perturbed_pres.nc
+  perturbed_surf: ../cesm2_4xco2/input/perturbed_surf.nc
+  nonrad_forcing: ../cesm2_4xco2/input/nonrad_forcing.nc
+
+run:
+  executable: cfram_fu_1col   # Fu radiation single-column binary
+  nproc: auto
+
+plot:
+  key_region:
+    lon: [0, 360]
+    lat: [-90, 90]

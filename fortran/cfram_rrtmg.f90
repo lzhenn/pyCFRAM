@@ -8,16 +8,18 @@
 
     implicit none
 
-    integer(kind=im),parameter :: nlat=1,nlon=1,nlev=37,ntime=1
+    integer(kind=im),parameter :: nlat=1,nlon=1,ntime=1
     integer(kind=im),parameter :: icld=2   ! 0-no cloud, 2-cloud
     integer(kind=im),parameter :: iaer=10   ! 0-no aerosol, 10-aerosol
     integer(kind=im),parameter :: nspecies=6 ! per-species: bc,ocphi,ocpho,sulf,ss,dust
     real(kind=rb),   parameter :: scon=1360.98 ! solar constant
+    integer(kind=im)           :: nlev      ! determined at runtime from plev.dat size
+    integer(kind=im)           :: plev_fsize
     integer(kind=im)           :: ilat, ilon, ilev, itime, ib, i, j
     integer(kind=im)           :: ilayer,nlayer,isp
 
     real(kind=rb) :: co2ppmv_base,co2ppmv_warm,ch4ppmv,n2oppmv
-    real(kind=rb) :: plev(nlev)
+    real(kind=rb), allocatable :: plev(:)
     real(kind=rb) :: ts_base(nlat,nlon),ts_warm(nlat,nlon)
     real(kind=rb) :: ps_base(nlat,nlon),ps_warm(nlat,nlon)
     real(kind=rb) :: albedo_lw_base(nlat,nlon),albedo_lw_warm(nlat,nlon)
@@ -26,88 +28,186 @@
     real(kind=rb) :: zenith_base(nlat,nlon), zenith_warm(nlat,nlon)
     real(kind=rb) :: swdn_surf_base(nlat,nlon),swdn_surf_warm(nlat,nlon)
     real(kind=rb) :: swup_surf_base(nlat,nlon),swup_surf_warm(nlat,nlon)
-    real(kind=rb) :: t_base(nlev,nlat,nlon), t_warm(nlev,nlat,nlon)
-    real(kind=rb) :: q_base(nlev,nlat,nlon), q_warm(nlev,nlat,nlon)
-    real(kind=rb) :: o3_base(nlev,nlat,nlon),o3_warm(nlev,nlat,nlon)
-    real(kind=rb) :: cldfrac_base(nlev,nlat,nlon), cldfrac_warm(nlev,nlat,nlon)
-    real(kind=rb) :: cldlwc_base(nlev,nlat,nlon), cldlwc_warm(nlev,nlat,nlon)
-    real(kind=rb) :: cldiwc_base(nlev,nlat,nlon), cldiwc_warm(nlev,nlat,nlon)
-    real(kind=rb) :: tauaer_sw_base(nlev,nlat,nlon,jpband),tauaer_sw_warm(nlev,nlat,nlon,jpband)
-    real(kind=rb) :: ssaaer_sw_base(nlev,nlat,nlon,jpband),ssaaer_sw_warm(nlev,nlat,nlon,jpband)
-    real(kind=rb) :: asmaer_sw_base(nlev,nlat,nlon,jpband),asmaer_sw_warm(nlev,nlat,nlon,jpband)
-    real(kind=rb) :: tauaer_lw_base(nlev,nlat,nlon,nbndlw),tauaer_lw_warm(nlev,nlat,nlon,jpband)
+    real(kind=rb), allocatable :: t_base(:,:,:), t_warm(:,:,:)
+    real(kind=rb), allocatable :: q_base(:,:,:), q_warm(:,:,:)
+    real(kind=rb), allocatable :: o3_base(:,:,:),o3_warm(:,:,:)
+    real(kind=rb), allocatable :: cldfrac_base(:,:,:), cldfrac_warm(:,:,:)
+    real(kind=rb), allocatable :: cldlwc_base(:,:,:), cldlwc_warm(:,:,:)
+    real(kind=rb), allocatable :: cldiwc_base(:,:,:), cldiwc_warm(:,:,:)
+    real(kind=rb), allocatable :: tauaer_sw_base(:,:,:,:),tauaer_sw_warm(:,:,:,:)
+    real(kind=rb), allocatable :: ssaaer_sw_base(:,:,:,:),ssaaer_sw_warm(:,:,:,:)
+    real(kind=rb), allocatable :: asmaer_sw_base(:,:,:,:),asmaer_sw_warm(:,:,:,:)
+    real(kind=rb), allocatable :: tauaer_lw_base(:,:,:,:),tauaer_lw_warm(:,:,:,:)
 
     ! Per-species aerosol optical properties. Species order must match Python writer
-    ! (SPECIES_ORDER in run_parallel_python.py / extract_full_field.py):
-    ! 1=bc, 2=ocphi, 3=ocpho, 4=sulf, 5=ss, 6=dust.
-    ! File layout on disk (from numpy tofile): C-order bytes with species fastest.
-    ! Fortran array declared with species as LAST dimension so READ loop reads
-    ! species innermost (matches disk layout).
-    real(kind=rb) :: tauaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: tauaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: ssaaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: ssaaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: asmaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: asmaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: tauaer_lw_base_spc(nlev,nlat,nlon,nbndlw,nspecies)
-    real(kind=rb) :: tauaer_lw_warm_spc(nlev,nlat,nlon,nbndlw,nspecies)
+    ! (SPECIES_ORDER in run_parallel_python.py): 1=bc, 2=ocphi, 3=ocpho, 4=sulf, 5=ss, 6=dust.
+    real(kind=rb), allocatable :: tauaer_sw_base_spc(:,:,:,:,:),tauaer_sw_warm_spc(:,:,:,:,:)
+    real(kind=rb), allocatable :: ssaaer_sw_base_spc(:,:,:,:,:),ssaaer_sw_warm_spc(:,:,:,:,:)
+    real(kind=rb), allocatable :: asmaer_sw_base_spc(:,:,:,:,:),asmaer_sw_warm_spc(:,:,:,:,:)
+    real(kind=rb), allocatable :: tauaer_lw_base_spc(:,:,:,:,:),tauaer_lw_warm_spc(:,:,:,:,:)
 
-    !Output: forcing only (dT solved in Python)
-    real(kind=rb) :: frc_warm_output(ntime,nlev+1,nlat,nlon), frc_co2_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_q_output(ntime,nlev+1,nlat,nlon), frc_ts_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_o3_output(ntime,nlev+1,nlat,nlon), frc_solar_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_albedo_output(ntime,nlev+1,nlat,nlon), frc_cloud_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_aerosol_output(ntime,nlev+1,nlat,nlon)
-    ! Per-species aerosol forcing outputs (Phase 3).
-    real(kind=rb) :: frc_bc_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_ocphi_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_ocpho_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_sulf_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_ss_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_dust_output(ntime,nlev+1,nlat,nlon)
-    ! Cloud LW/SW split forcing outputs
-    real(kind=rb) :: frc_cloud_lw_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_cloud_sw_output(ntime,nlev+1,nlat,nlon)
+    !Output: forcing only (dT solved in Python). All (ntime, nlev+1, nlat, nlon).
+    real(kind=rb), allocatable :: frc_warm_output(:,:,:,:), frc_co2_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_q_output(:,:,:,:), frc_ts_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_o3_output(:,:,:,:), frc_solar_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_albedo_output(:,:,:,:), frc_cloud_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_aerosol_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_bc_output(:,:,:,:), frc_ocphi_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_ocpho_output(:,:,:,:), frc_sulf_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_ss_output(:,:,:,:), frc_dust_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_cloud_lw_output(:,:,:,:), frc_cloud_sw_output(:,:,:,:)
 
-    ! Thread-private fixed-size work arrays (nlev+1 = 38 max)
-    real(kind=rb) :: fds_1d(nlev+1), fus_1d(nlev+1), htr_sw_1d(nlev)
-    real(kind=rb) :: fdl_1d(nlev+1), ful_1d(nlev+1), htr_lw_1d(nlev)
-    real(kind=rb) :: htr_1d(nlev), lw_1d(nlev), sw_1d(nlev)
-    real(kind=rb) :: rad_1d_base(nlev), fd_1d_base(nlev+1), fu_1d_base(nlev+1)
-    real(kind=rb) :: rad_1d_warm(nlev), fd_1d_warm(nlev+1), fu_1d_warm(nlev+1)
-    real(kind=rb) :: rad_1d_t(nlev),    fd_1d_t(nlev+1),    fu_1d_t(nlev+1)
-    real(kind=rb) :: rad_1d_q(nlev),    fd_1d_q(nlev+1),    fu_1d_q(nlev+1)
-    real(kind=rb) :: rad_1d_ts(nlev),   fd_1d_ts(nlev+1),   fu_1d_ts(nlev+1)
-    real(kind=rb) :: rad_1d_o3(nlev),   fd_1d_o3(nlev+1),   fu_1d_o3(nlev+1)
-    real(kind=rb) :: rad_1d_solar(nlev),fd_1d_solar(nlev+1),fu_1d_solar(nlev+1)
-    real(kind=rb) :: rad_1d_albedo(nlev),fd_1d_albedo(nlev+1),fu_1d_albedo(nlev+1)
-    real(kind=rb) :: rad_1d_cloud(nlev), fd_1d_cloud(nlev+1), fu_1d_cloud(nlev+1)
-    real(kind=rb) :: rad_1d_aerosol(nlev),fd_1d_aerosol(nlev+1),fu_1d_aerosol(nlev+1)
-    real(kind=rb) :: rad_1d_co2(nlev),   fd_1d_co2(nlev+1),   fu_1d_co2(nlev+1)
-    real(kind=rb) :: lw_1d_base(nlev),   fdl_1d_base(nlev+1), ful_1d_base(nlev+1)
+    ! Thread-private work arrays (size nlev or nlev+1)
+    real(kind=rb), allocatable :: fds_1d(:), fus_1d(:), htr_sw_1d(:)
+    real(kind=rb), allocatable :: fdl_1d(:), ful_1d(:), htr_lw_1d(:)
+    real(kind=rb), allocatable :: htr_1d(:), lw_1d(:), sw_1d(:)
+    real(kind=rb), allocatable :: rad_1d_base(:), fd_1d_base(:), fu_1d_base(:)
+    real(kind=rb), allocatable :: rad_1d_warm(:), fd_1d_warm(:), fu_1d_warm(:)
+    real(kind=rb), allocatable :: rad_1d_t(:),    fd_1d_t(:),    fu_1d_t(:)
+    real(kind=rb), allocatable :: rad_1d_q(:),    fd_1d_q(:),    fu_1d_q(:)
+    real(kind=rb), allocatable :: rad_1d_ts(:),   fd_1d_ts(:),   fu_1d_ts(:)
+    real(kind=rb), allocatable :: rad_1d_o3(:),   fd_1d_o3(:),   fu_1d_o3(:)
+    real(kind=rb), allocatable :: rad_1d_solar(:),fd_1d_solar(:),fu_1d_solar(:)
+    real(kind=rb), allocatable :: rad_1d_albedo(:),fd_1d_albedo(:),fu_1d_albedo(:)
+    real(kind=rb), allocatable :: rad_1d_cloud(:), fd_1d_cloud(:), fu_1d_cloud(:)
+    real(kind=rb), allocatable :: rad_1d_aerosol(:),fd_1d_aerosol(:),fu_1d_aerosol(:)
+    real(kind=rb), allocatable :: rad_1d_co2(:),   fd_1d_co2(:),   fu_1d_co2(:)
+    real(kind=rb), allocatable :: lw_1d_base(:),   fdl_1d_base(:), ful_1d_base(:)
 
-    real(kind=rb) :: frc_co2(nlev+1), frc_t(nlev+1), frc_q(nlev+1), frc_albedo(nlev+1)
-    real(kind=rb) :: frc_ts(nlev+1), frc_o3(nlev+1), frc_solar(nlev+1), frc_cloud(nlev+1)
-    real(kind=rb) :: frc_warm(nlev+1), frc_aerosol(nlev+1)
-    real(kind=rb) :: frc_cloud_lw(nlev+1), frc_cloud_sw(nlev+1)
-    ! Cloud-state LW/SW component fluxes, saved right after the cloud rad_driver call
-    real(kind=rb) :: lw_1d_cloud(nlev), sw_1d_cloud(nlev)
-    real(kind=rb) :: fdl_1d_cloud(nlev+1), ful_1d_cloud(nlev+1)
-    real(kind=rb) :: fds_1d_cloud(nlev+1), fus_1d_cloud(nlev+1)
+    real(kind=rb), allocatable :: frc_co2(:), frc_t(:), frc_q(:), frc_albedo(:)
+    real(kind=rb), allocatable :: frc_ts(:), frc_o3(:), frc_solar(:), frc_cloud(:)
+    real(kind=rb), allocatable :: frc_warm(:), frc_aerosol(:)
+    real(kind=rb), allocatable :: frc_cloud_lw(:), frc_cloud_sw(:)
+    ! Cloud-state LW/SW snapshot
+    real(kind=rb), allocatable :: lw_1d_cloud(:), sw_1d_cloud(:)
+    real(kind=rb), allocatable :: fdl_1d_cloud(:), ful_1d_cloud(:)
+    real(kind=rb), allocatable :: fds_1d_cloud(:), fus_1d_cloud(:)
 
-    ! Per-species perturbation work arrays (thread-private)
-    real(kind=rb) :: tauaer_sw_mix(nlev,jpband), ssaaer_sw_mix(nlev,jpband), asmaer_sw_mix(nlev,jpband)
-    real(kind=rb) :: tauaer_lw_mix(nlev,nbndlw)
-    real(kind=rb) :: tau_ssa_base_sw(nlev,jpband), tau_ssa_g_base_sw(nlev,jpband)
-    real(kind=rb) :: tau_ssa_mix(nlev,jpband), tau_ssa_g_mix(nlev,jpband)
-    real(kind=rb) :: rad_1d_spc(nlev), fd_1d_spc(nlev+1), fu_1d_spc(nlev+1)
-    real(kind=rb) :: frc_spc(nlev+1,nspecies)
+    ! Lu/Cai full-state perturbation arrays
+    real(kind=rb), allocatable :: rad_1d_full(:), fd_1d_full(:), fu_1d_full(:)
+    real(kind=rb), allocatable :: lw_1d_full(:), sw_1d_full(:)
+    real(kind=rb), allocatable :: fdl_1d_full(:), ful_1d_full(:)
+    real(kind=rb), allocatable :: fds_1d_full(:), fus_1d_full(:)
+    real(kind=rb), allocatable :: frc_full(:)
+    real(kind=rb), allocatable :: frc_full_output(:,:,:,:)
 
-    real(kind=rb) :: drdt(nlev+1,nlev+1), drdt_inv(nlev+1,nlev+1)
+    ! Skip flags (read from data_prep/skip_flags.txt at startup; default = run all)
+    logical :: skip_aerosol
 
-    plev = (/1.,2.,3.,5.,7.,10.,20.,30.,50.,70.,100.,125.,150.,175.,200.,&
-        225.,250.,300.,350.,400.,450.,500.,550.,600.,650.,700.,750.,775.,&
-        800.,825.,850.,875.,900.,925.,950.,975.,1000./)
+    ! Per-species perturbation work arrays
+    real(kind=rb), allocatable :: tauaer_sw_mix(:,:), ssaaer_sw_mix(:,:), asmaer_sw_mix(:,:)
+    real(kind=rb), allocatable :: tauaer_lw_mix(:,:)
+    real(kind=rb), allocatable :: tau_ssa_base_sw(:,:), tau_ssa_g_base_sw(:,:)
+    real(kind=rb), allocatable :: tau_ssa_mix(:,:), tau_ssa_g_mix(:,:)
+    real(kind=rb), allocatable :: rad_1d_spc(:), fd_1d_spc(:), fu_1d_spc(:)
+    real(kind=rb), allocatable :: frc_spc(:,:)
+
+    real(kind=rb), allocatable :: drdt(:,:), drdt_inv(:,:)
+
+    !-------------------------------- Determine nlev from plev.dat size --------
+    ! plev.dat is nlev × float64 (8 bytes). Inferring nlev from file size lets a
+    ! single binary handle any vertical grid (per-case override via plev.dat).
+    inquire(file='data_prep/plev.dat', size=plev_fsize)
+    if (plev_fsize <= 0) then
+        print *, 'ERROR: data_prep/plev.dat missing or empty'
+        stop 1
+    end if
+    nlev = plev_fsize / 8
+    print *, 'Runtime nlev =', nlev, ' (from plev.dat size =', plev_fsize, 'bytes)'
+
+    !-------------------------------- Allocate all nlev-dependent arrays -------
+    allocate(plev(nlev))
+    allocate(t_base(nlev,nlat,nlon), t_warm(nlev,nlat,nlon))
+    allocate(q_base(nlev,nlat,nlon), q_warm(nlev,nlat,nlon))
+    allocate(o3_base(nlev,nlat,nlon), o3_warm(nlev,nlat,nlon))
+    allocate(cldfrac_base(nlev,nlat,nlon), cldfrac_warm(nlev,nlat,nlon))
+    allocate(cldlwc_base(nlev,nlat,nlon), cldlwc_warm(nlev,nlat,nlon))
+    allocate(cldiwc_base(nlev,nlat,nlon), cldiwc_warm(nlev,nlat,nlon))
+    allocate(tauaer_sw_base(nlev,nlat,nlon,jpband), tauaer_sw_warm(nlev,nlat,nlon,jpband))
+    allocate(ssaaer_sw_base(nlev,nlat,nlon,jpband), ssaaer_sw_warm(nlev,nlat,nlon,jpband))
+    allocate(asmaer_sw_base(nlev,nlat,nlon,jpband), asmaer_sw_warm(nlev,nlat,nlon,jpband))
+    allocate(tauaer_lw_base(nlev,nlat,nlon,nbndlw), tauaer_lw_warm(nlev,nlat,nlon,nbndlw))
+    allocate(tauaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(tauaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(ssaaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(ssaaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(asmaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(asmaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(tauaer_lw_base_spc(nlev,nlat,nlon,nbndlw,nspecies))
+    allocate(tauaer_lw_warm_spc(nlev,nlat,nlon,nbndlw,nspecies))
+    allocate(frc_warm_output(ntime,nlev+1,nlat,nlon), frc_co2_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_q_output(ntime,nlev+1,nlat,nlon), frc_ts_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_o3_output(ntime,nlev+1,nlat,nlon), frc_solar_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_albedo_output(ntime,nlev+1,nlat,nlon), frc_cloud_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_aerosol_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_bc_output(ntime,nlev+1,nlat,nlon), frc_ocphi_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_ocpho_output(ntime,nlev+1,nlat,nlon), frc_sulf_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_ss_output(ntime,nlev+1,nlat,nlon), frc_dust_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_cloud_lw_output(ntime,nlev+1,nlat,nlon), frc_cloud_sw_output(ntime,nlev+1,nlat,nlon))
+    allocate(fds_1d(nlev+1), fus_1d(nlev+1), htr_sw_1d(nlev))
+    allocate(fdl_1d(nlev+1), ful_1d(nlev+1), htr_lw_1d(nlev))
+    allocate(htr_1d(nlev), lw_1d(nlev), sw_1d(nlev))
+    allocate(rad_1d_base(nlev), fd_1d_base(nlev+1), fu_1d_base(nlev+1))
+    allocate(rad_1d_warm(nlev), fd_1d_warm(nlev+1), fu_1d_warm(nlev+1))
+    allocate(rad_1d_t(nlev),    fd_1d_t(nlev+1),    fu_1d_t(nlev+1))
+    allocate(rad_1d_q(nlev),    fd_1d_q(nlev+1),    fu_1d_q(nlev+1))
+    allocate(rad_1d_ts(nlev),   fd_1d_ts(nlev+1),   fu_1d_ts(nlev+1))
+    allocate(rad_1d_o3(nlev),   fd_1d_o3(nlev+1),   fu_1d_o3(nlev+1))
+    allocate(rad_1d_solar(nlev),fd_1d_solar(nlev+1),fu_1d_solar(nlev+1))
+    allocate(rad_1d_albedo(nlev),fd_1d_albedo(nlev+1),fu_1d_albedo(nlev+1))
+    allocate(rad_1d_cloud(nlev), fd_1d_cloud(nlev+1), fu_1d_cloud(nlev+1))
+    allocate(rad_1d_aerosol(nlev),fd_1d_aerosol(nlev+1),fu_1d_aerosol(nlev+1))
+    allocate(rad_1d_co2(nlev),   fd_1d_co2(nlev+1),   fu_1d_co2(nlev+1))
+    allocate(lw_1d_base(nlev),   fdl_1d_base(nlev+1), ful_1d_base(nlev+1))
+    allocate(frc_co2(nlev+1), frc_t(nlev+1), frc_q(nlev+1), frc_albedo(nlev+1))
+    allocate(frc_ts(nlev+1), frc_o3(nlev+1), frc_solar(nlev+1), frc_cloud(nlev+1))
+    allocate(frc_warm(nlev+1), frc_aerosol(nlev+1))
+    allocate(frc_cloud_lw(nlev+1), frc_cloud_sw(nlev+1))
+    allocate(lw_1d_cloud(nlev), sw_1d_cloud(nlev))
+    allocate(fdl_1d_cloud(nlev+1), ful_1d_cloud(nlev+1))
+    allocate(fds_1d_cloud(nlev+1), fus_1d_cloud(nlev+1))
+    allocate(rad_1d_full(nlev), fd_1d_full(nlev+1), fu_1d_full(nlev+1))
+    allocate(lw_1d_full(nlev), sw_1d_full(nlev))
+    allocate(fdl_1d_full(nlev+1), ful_1d_full(nlev+1))
+    allocate(fds_1d_full(nlev+1), fus_1d_full(nlev+1))
+    allocate(frc_full(nlev+1))
+    allocate(frc_full_output(ntime,nlev+1,nlat,nlon))
+    allocate(tauaer_sw_mix(nlev,jpband), ssaaer_sw_mix(nlev,jpband), asmaer_sw_mix(nlev,jpband))
+    allocate(tauaer_lw_mix(nlev,nbndlw))
+    allocate(tau_ssa_base_sw(nlev,jpband), tau_ssa_g_base_sw(nlev,jpband))
+    allocate(tau_ssa_mix(nlev,jpband), tau_ssa_g_mix(nlev,jpband))
+    allocate(rad_1d_spc(nlev), fd_1d_spc(nlev+1), fu_1d_spc(nlev+1))
+    allocate(frc_spc(nlev+1,nspecies))
+    allocate(drdt(nlev+1,nlev+1), drdt_inv(nlev+1,nlev+1))
+
+    !-------------------------------- Read plev values --------
+    open(unit=99, file='data_prep/plev.dat', form='unformatted', access='direct', recl=nlev*8)
+    read(99, rec=1) plev
+    close(99)
+
+!-------------------------------- Read Skip Flags (optional) ----------------------------------
+    ! data_prep/skip_flags.txt may contain lines like "skip_aerosol=1" to suppress
+    ! perturbation calls when the variable is identical between base and warm states.
+    ! Default (file absent or flag not set): run all perturbations.
+    skip_aerosol = .false.
+    block
+        logical :: flag_exists
+        character(len=128) :: line
+        integer :: ios
+        inquire(file='data_prep/skip_flags.txt', exist=flag_exists)
+        if (flag_exists) then
+            open(unit=97, file='data_prep/skip_flags.txt', status='old', action='read')
+            do
+                read(97, '(A)', iostat=ios) line
+                if (ios /= 0) exit
+                if (index(line, 'skip_aerosol=1') > 0) skip_aerosol = .true.
+            end do
+            close(97)
+            print *, "skip_flags loaded: skip_aerosol=", skip_aerosol
+        else
+            print *, "no skip_flags.txt; running all perturbations"
+        end if
+    end block
 
 !-------------------------------- Open Input Files-----------------------------------------------
     open(unit=101,file='data_prep/hus_base.dat',form='unformatted', access='direct',recl=nlev*nlat*nlon*8)
@@ -288,6 +388,9 @@
 !$OMP   lw_1d_base, fdl_1d_base, ful_1d_base, &
 !$OMP   frc_co2, frc_t, frc_q, frc_ts, frc_o3, frc_solar, &
 !$OMP   frc_cloud, frc_albedo, frc_warm, frc_aerosol, &
+!$OMP   rad_1d_full, lw_1d_full, sw_1d_full, &
+!$OMP   fdl_1d_full, ful_1d_full, fds_1d_full, fus_1d_full, &
+!$OMP   fd_1d_full, fu_1d_full, frc_full, &
 !$OMP   drdt, drdt_inv) &
 !$OMP SCHEDULE(dynamic)
        do ilat = 1,nlat
@@ -399,15 +502,27 @@
                fds_1d_cloud = fds_1d
                fus_1d_cloud = fus_1d
 
-              ! Aerosol
+              ! Aerosol — skipped if global skip_aerosol flag set (saves 1 + nspecies rad_driver calls per column)
+              if (.not. skip_aerosol) then
                call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
                    ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
                    plev, t_base(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
                    cldiwc_base(:,ilat,ilon), tauaer_sw_warm(:,ilat,ilon,:), ssaaer_sw_warm(:,ilat,ilon,:), asmaer_sw_warm(:,ilat,ilon,:),&
                    tauaer_lw_warm(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
                    fdl_1d, ful_1d, htr_lw_1d, fd_1d_aerosol, fu_1d_aerosol, htr_1d, rad_1d_aerosol, lw_1d, sw_1d)
+              else
+                  ! Identical to base (no perturbation): copy base diagnostics so frc_aerosol = 0
+                  rad_1d_aerosol = rad_1d_base
+                  fd_1d_aerosol  = fd_1d_base
+                  fu_1d_aerosol  = fu_1d_base
+              end if
 
-               ! Per-species aerosol perturbation (Phase 3).
+               ! Per-species aerosol perturbation (Phase 3) — same skip guard.
+               if (skip_aerosol) then
+                   frc_spc = 0.0
+                   ! fall through to forcing computation; per-species frcs are zero
+                   goto 7777
+               end if
                ! For each species isp, build a mixed optical state where only isp is
                ! at warm, all others stay at base. Use AOD-weighted combination:
                !   tau_mix      = tau_bulk_base - tau_base_spc(isp) + tau_warm_spc(isp)
@@ -452,6 +567,19 @@
                    frc_spc(nlayer+1, isp) = fd_1d_spc(nlayer+1) - fu_1d_spc(nlayer+1) &
                        - (fd_1d_base(nlayer+1) - fu_1d_base(nlayer+1))
                end do
+7777           continue   ! per-species skip target
+
+               ! ============== Lu/Cai full-state perturbation ==============
+               ! All variables at perturbed values INCLUDING T_warm, ts_warm.
+               ! Used to compute ΔQ_dyn = (rad_1d_full - rad_1d_base) for closure.
+               ! Aerosol always uses warm optics here (aerosol skip only affects the
+               ! standalone aerosol partial; the bulk warm state is part of the full).
+               call rad_driver(nlayer, iaer, icld, co2ppmv_warm, ch4ppmv, n2oppmv, ps_warm(ilat,ilon)/100.0,&
+                   ts_warm(ilat,ilon), zenith_warm(ilat,ilon), albedo_sw_warm(ilat,ilon), albedo_lw_warm(ilat,ilon),&
+                   plev, t_warm(:,ilat,ilon), q_warm(:,ilat,ilon), o3_warm(:,ilat,ilon), cldfrac_warm(:,ilat,ilon), cldlwc_warm(:,ilat,ilon),&
+                   cldiwc_warm(:,ilat,ilon), tauaer_sw_warm(:,ilat,ilon,:), ssaaer_sw_warm(:,ilat,ilon,:), asmaer_sw_warm(:,ilat,ilon,:),&
+                   tauaer_lw_warm(:,ilat,ilon,:), fds_1d_full, fus_1d_full, htr_sw_1d,&
+                   fdl_1d_full, ful_1d_full, htr_lw_1d, fd_1d_full, fu_1d_full, htr_1d, rad_1d_full, lw_1d_full, sw_1d_full)
 
                ! Compute forcing (W/m2)
                frc_warm(1:nlayer)    = rad_1d_warm(1:nlayer) - rad_1d_base(1:nlayer)
@@ -485,6 +613,12 @@
                frc_aerosol(1:nlayer) = rad_1d_aerosol(1:nlayer) - rad_1d_base(1:nlayer)
                frc_aerosol(nlayer+1) = fd_1d_aerosol(nlayer+1)-fu_1d_aerosol(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
 
+               ! Lu/Cai full-state forcing: rad_1d_full uses T_warm + all-perturbed.
+               ! Python computes  dT_dry = -drdt_inv @ (-frc_full) = drdt_inv @ frc_full
+               ! which captures ΔQ_dyn from full-state energy balance (Lu/Cai Eq.4).
+               frc_full(1:nlayer) = rad_1d_full(1:nlayer) - rad_1d_base(1:nlayer)
+               frc_full(nlayer+1) = fd_1d_full(nlayer+1)-fu_1d_full(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
+
                ! Store forcing output
                do ilayer = 1, nlayer
                   frc_warm_output(itime,ilayer,ilat,ilon) = frc_warm(ilayer)
@@ -498,6 +632,7 @@
                   frc_cloud_lw_output(itime,ilayer,ilat,ilon) = frc_cloud_lw(ilayer)
                   frc_cloud_sw_output(itime,ilayer,ilat,ilon) = frc_cloud_sw(ilayer)
                   frc_aerosol_output(itime,ilayer,ilat,ilon) = frc_aerosol(ilayer)
+                  frc_full_output(itime,ilayer,ilat,ilon)    = frc_full(ilayer)
                   frc_bc_output(itime,ilayer,ilat,ilon)    = frc_spc(ilayer,1)
                   frc_ocphi_output(itime,ilayer,ilat,ilon) = frc_spc(ilayer,2)
                   frc_ocpho_output(itime,ilayer,ilat,ilon) = frc_spc(ilayer,3)
@@ -518,6 +653,7 @@
                   frc_cloud_lw_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
                   frc_cloud_sw_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
                   frc_aerosol_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
+                  frc_full_output(itime,nlayer+1:nlev,ilat,ilon)    = -999.0
                   frc_bc_output(itime,nlayer+1:nlev,ilat,ilon)    = -999.0
                   frc_ocphi_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
                   frc_ocpho_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
@@ -538,6 +674,7 @@
                frc_cloud_lw_output(itime,nlev+1,ilat,ilon) = frc_cloud_lw(nlayer+1)
                frc_cloud_sw_output(itime,nlev+1,ilat,ilon) = frc_cloud_sw(nlayer+1)
                frc_aerosol_output(itime,nlev+1,ilat,ilon) = frc_aerosol(nlayer+1)
+               frc_full_output(itime,nlev+1,ilat,ilon)    = frc_full(nlayer+1)
                frc_bc_output(itime,nlev+1,ilat,ilon)    = frc_spc(nlayer+1,1)
                frc_ocphi_output(itime,nlev+1,ilat,ilon) = frc_spc(nlayer+1,2)
                frc_ocpho_output(itime,nlev+1,ilat,ilon) = frc_spc(nlayer+1,3)
@@ -568,6 +705,7 @@
     call write_out_3d(frc_cloud_sw_output,"frc_cloud_sw.dat",     ntime,nlev,nlat,nlon)
     call write_out_3d(frc_aerosol_output,"frc_aerosol.dat ",      ntime,nlev,nlat,nlon)
     call write_out_3d(frc_warm_output,   "frc_warm.dat    ",      ntime,nlev,nlat,nlon)
+    call write_out_3d(frc_full_output,   "frc_full.dat    ",      ntime,nlev,nlat,nlon)
     call write_out_3d(frc_solar_output,  "frc_solar.dat   ",      ntime,nlev,nlat,nlon)
     ! Per-species aerosol forcing (Phase 3)
     call write_out_3d(frc_bc_output,     "frc_bc.dat      ",      ntime,nlev,nlat,nlon)

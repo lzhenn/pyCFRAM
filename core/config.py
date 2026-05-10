@@ -60,9 +60,29 @@ def get_nproc(case_cfg=None):
     return int(n)
 
 
-def get_plev():
-    """Get pressure levels array (hPa, TOA→surface)."""
+def get_plev(case_cfg=None):
+    """Get pressure levels (hPa, TOA→surface).
+
+    Per-case override: case.yaml may set `grid.pressure_levels` to use a
+    non-default vertical grid (e.g. 19-level CMIP6 plev for cesm2_4xco2_official).
+    Without override, returns the default 37-level grid.
+    """
+    if case_cfg and 'grid' in case_cfg and 'pressure_levels' in case_cfg['grid']:
+        return np.array(case_cfg['grid']['pressure_levels'], dtype=np.float64)
     return np.array(defaults()['grid']['pressure_levels'], dtype=np.float64)
+
+
+def get_executable(case_cfg=None):
+    """Get Fortran executable name. Defaults to cfram_rrtmg_1col (37 lev).
+
+    Per-case override via case.yaml `run.executable`, e.g. cfram_rrtmg_1col_n19
+    for the 19-level CMIP6 build.
+    """
+    if case_cfg:
+        exe = case_cfg.get('run', {}).get('executable')
+        if exe:
+            return exe
+    return 'cfram_rrtmg_1col'
 
 
 def get_aerosol_map():

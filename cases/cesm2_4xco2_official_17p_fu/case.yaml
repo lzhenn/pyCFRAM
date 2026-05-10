@@ -1,0 +1,30 @@
+# CESM2 4×CO2 — Fu radiation, 17-plev (apple-to-apple OLD CFRAM raw/CFRAM.zip
+# GW-base.f L14: plev=[10,20,30,50,70,100,150,200,250,300,400,500,600,700,850,925,1000]).
+# Diagnostic to test if the extra 1, 5 hPa layers in cesm2_4xco2_official_fu
+# (19 plev) are causing the WV/CO2/DYN dT under-estimation seen vs raw/north.jpg.
+#
+# Input is subsetted from cesm2_4xco2_official: drop top 2 plev (k=18=1, k=17=5
+# in surface→TOA NC order) via scripts/subset_to_17p.py.
+case_name: CESM2_4xCO2_official_17p_fu
+description: "CESM2 4xCO2, Fu radiation, 17 plev = OLD CFRAM exact (diagnostic)"
+
+input:
+  base_pres:      input/base_pres.nc
+  base_surf:      input/base_surf.nc
+  perturbed_pres: input/perturbed_pres.nc
+  perturbed_surf: input/perturbed_surf.nc
+  nonrad_forcing: input/nonrad_forcing.nc
+
+# OLD CFRAM exact 17 plev (TOA→surface in pyCFRAM convention).
+grid:
+  pressure_levels: [10, 20, 30, 50, 70, 100, 150, 200, 250, 300,
+                    400, 500, 600, 700, 850, 925, 1000]
+
+run:
+  executable: cfram_fu_1col
+  nproc: auto
+
+plot:
+  key_region:
+    lon: [0, 360]
+    lat: [-90, 90]

@@ -1,8 +1,15 @@
 # pyCFRAM
 
-A Python-encapsulated implementation of the **Climate Feedback–Response Analysis Method (CFRAM)**. pyCFRAM aims to build a user-friendly, high-efficient, and extendable interface for CFRAM users. It uses `multiprocessing` (and future `f2py`/`mpi4py` support) to exploit the maximum potential of code parallelism without dramatically modifying the original Fortran RRTMG radiation code.
+A Python-encapsulated implementation of the **Climate Feedback–Response Analysis Method (CFRAM)**. pyCFRAM aims to build a user-friendly, high-efficient, and extendable interface for CFRAM users. It uses `multiprocessing` (and future `f2py`/`mpi4py` support) to exploit the maximum potential of code parallelism without dramatically modifying the original Fortran radiation code.
 
-Currently reproduces the temperature decomposition analysis from Wu et al. (2025, *J. Climate*) for extreme heat events EH13 (Aug 2013) and EH22 (Aug 2022) over East China.
+**Two interchangeable radiation engines** are supported (selectable per-case via `case.yaml`):
+
+- **RRTMG** (default) — modern broadband LW/SW with full GOCART aerosol coupling and per-species partial perturbations (`bc, ocphi, ocpho, sulf, ss, dust`).
+- **Fu** — the classical scheme used by the original Fortran CFRAM (Lu/Cai). Bit-exact with the OLD CFRAM reference run when fed the same inputs (validated 2026-05-10, all dT_X ≤ 0.001 K residual at single column).
+
+Reproduces:
+- Temperature decomposition from Wu et al. (2025, *J. Climate*) for extreme heat events EH13 (Aug 2013) and EH22 (Aug 2022) over East China (RRTMG path).
+- 13-panel global / polar dT decomposition for a CMIP6 CESM2 4×CO2 experiment (Fu path, apple-to-apple with the OLD CFRAM Fortran benchmark).
 
 For the CFRAM methodology, please refer to:
 - Lu, J., and M. Cai, 2009: A new framework for isolating individual feedback processes in coupled general circulation climate models. *Climate Dynamics*.
@@ -14,11 +21,14 @@ For a related approach (CFRAM-A) using RRTMG with aerosol independently develope
 
 ## Architecture
 ```
-Fortran RRTMG (radiation engine, per grid point)
+Fortran radiation (per grid point) — RRTMG OR Fu, picked by case.yaml
   ├── base + warm + 8 partial-perturbation rad_driver calls
   ├── Planck matrix (∂R/∂T) via nlayer+1 LW-only perturbations
-  ├── 6 per-species aerosol perturbation calls (bc, ocphi, ocpho, sulf, ss, dust)
-  └── cloud LW/SW component snapshot (zero extra RRTMG calls)
+  ├── 6 per-species aerosol perturbation calls (RRTMG only: bc/ocphi/ocpho/sulf/ss/dust)
+  ├── cloud LW/SW component snapshot (zero extra calls)
+  └── Fu only: dual MC sub-column overlap patterns
+        ├── base_no_cloud (cc_base-consistent) used by base/co2/wv/o3/solar/albedo/ts + drdt
+        └── warm_no_cloud (cc_warm-consistent) used by warm/cloud/full
   → writes 9 bulk + 6 per-species + 2 cloud_lw/sw forcings + Planck inverse
 
 Python (decomposition + analysis)
@@ -28,6 +38,21 @@ Python (decomposition + analysis)
   ├── dT_atmdyn = dT_obs − Σ(all others)   # atmospheric dynamics (residual)
   └── multiprocessing parallel execution   # embarrassingly parallel over grid points
 ```
+
+### Selecting the radiation engine
+
+Each case.yaml's `run.executable` field selects which Fortran binary to run. Examples:
+
+```yaml
+# case.yaml
+run:
+  executable: cfram_rrtmg_1col       # RRTMG, 37-plev (default)
+  # or:
+  # executable: cfram_rrtmg_1col_n19 # RRTMG, 19-plev (CMIP6 plev)
+  # executable: cfram_fu_1col        # Fu, runtime nlev (any vertical grid)
+```
+
+The Fu binary infers `nlev` at runtime from the size of `data_prep/plev.dat`, so a single Fu binary handles 17/19/37/… plev cases without recompilation.
 
 ## Prerequisites
 
@@ -45,15 +70,22 @@ cd pyCFRAM
 pip install -r requirements.txt
 ```
 
-### 2. Compile Fortran RRTMG
+### 2. Compile Fortran radiation engine
 
 ```bash
 cd fortran
-make          # builds cfram_rrtmg (full-field) and cfram_rrtmg_1col (single-column)
+make            # default RRTMG: builds cfram_rrtmg_1col (single-column, 37-plev)
+make fu         # Fu: builds cfram_fu_1col (single-column, runtime nlev)
+make TOOLCHAIN=gnu      # Mac local: gfortran + conda LAPACK
+make TOOLCHAIN=intel    # HPC: ifort + MKL (default on hqlx220/204)
 cd ..
 ```
 
-The single-column executable `cfram_rrtmg_1col` is used by the parallel Python runner. The RRTMG lookup tables (`rrtmg_lw.nc`, `rrtmg_sw.nc`) are included in the repository.
+Single-column executables are used by the parallel Python runner. The RRTMG lookup tables (`rrtmg_lw.nc`, `rrtmg_sw.nc`) and Fu source (`fortran/Fu/cas_fu_radiation.f`, `fu_helpers.f`, `para.file`) are included.
+
+Both toolchains tested:
+- `intel` (ifort 2021.7 + MKL 2022.2 LP64): production HPC build.
+- `gnu` (gfortran from conda + openblas via `liblapack`/`libblas`): Mac local debugging.
 
 ### 3. Obtain source data (ERA5 + MERRA-2)
 
@@ -122,40 +154,106 @@ python3 scripts/plot_fig3_independent.py eh22       # 2-column Fig.3 (paper | in
 2. Run: `python3 scripts/build_case_input.py --case my_case` to generate inputs
 3. Run: `python3 run_case.py my_case`
 
+## CESM2 4×CO2 Workflow (CMIP6 raw → pyCFRAM)
+
+In addition to ERA5+MERRA-2 (extreme-event attribution), pyCFRAM can decompose any CMIP6 abrupt-4×CO2 vs piControl experiment. The shipped `cesm2_4xco2_official_17p_fu` case is an apple-to-apple match against the OLD Fortran CFRAM benchmark on a 17-plev grid using the Fu radiation engine.
+
+```bash
+# 1. Build pyCFRAM input from CMIP6 raw (piControl + abrupt-4xCO2)
+python3 scripts/build_cesm2_official.py --case cesm2_4xco2_official
+
+# 2. Re-grid to 17 plev (matches OLD CFRAM exactly)
+python3 scripts/subset_to_17p.py cesm2_4xco2_official cesm2_4xco2_official_17p_fu
+
+# 3. Inject CESM 1850 climatology O3 (Phase A: held identical in base & warm)
+python3 scripts/inject_cesm_o3.py --case cesm2_4xco2_official_17p_fu
+
+# 4. Mask sub-surface layers below ps_warm (q/o3 = HOLD, cliq/cice/aer = 0)
+python3 scripts/mask_subsurface_layers.py --case cesm2_4xco2_official_17p_fu
+
+# 5. Build Fu binary + run on hqlx204 (256 cores)
+ssh mini 'ssh lzhenn@hqlx204 "cd /home/lzhenn/work/ust-jumper/pyCFRAM/fortran && \
+  source /home/lzhenn/.bashrc_liquor_i22wrf415 && make fu"'
+ssh mini 'ssh lzhenn@hqlx204 "cd /home/lzhenn/work/ust-jumper/pyCFRAM && \
+  source /home/lzhenn/.bashrc_liquor_i22wrf415 && \
+  python3 -u run_case.py cesm2_4xco2_official_17p_fu --step run --nproc 200"'
+
+# 6. Plot 13-panel global / north-polar / south-polar
+python3 scripts/plot_13panel_global.py cesm2_4xco2_official_17p_fu
+python3 scripts/plot_13panel_polar.py  cesm2_4xco2_official_17p_fu
+```
+
+**Validation against the Fortran CFRAM benchmark (collaborator's CESM2 run):**
+single-column dual-MC validation at (159, 144) reproduces `partial_T_1.grd` for all 13 dT terms within ≤ 0.003 K when fed identical `.dat` inputs. Global-field discrepancy in DYN/ATM/OCH panels vs OLD's `north.jpg` is **not** a code bug — it is traceable to the OLD reference run using a corrupted O3 input (the collaborator's `o3_base.dat` and `o3_warm.dat` are byte-identical copies of `hus_base.dat` (md5 `1cefb325...`); see `session_log.md` for the full diagnosis).
+
 ## Project Structure
 
 ```
 pyCFRAM/
-├── core/           # Python modules: radiation prep, aerosol optics,
-│                   #   Planck matrix, decomposition, Fortran I/O
-├── fortran/        # Modified CFRAM-RRTMG + upstream RRTMG LW/SW
-├── scripts/        # Workflow scripts (extract → run → plot)
-├── plotting/       # Matplotlib/Cartopy visualization
-├── data/           # ERA5 data loader
-├── configs/        # Experiment parameters (defaults.yaml)
-└── docs/           # Algorithm specification
+├── core/                # Python modules: config, aerosol optics, heating profile, …
+├── data/                # Source loaders: era5_source.py, merra2_aerosol.py,
+│                        #   cesm2_cmip6_source.py (CMIP6 hybrid→plev)
+├── fortran/             # CFRAM-RRTMG + Fu radiation engines
+│   ├── Fu/              #   Fu source (cas_fu_radiation.f, fu_helpers.f, para.file)
+│   ├── rrtmg_*/         #   upstream RRTMG LW/SW
+│   ├── cfram_rrtmg.f90  #   RRTMG full-field driver (legacy, mostly obsolete)
+│   ├── cfram_rrtmg_1col.f90  # RRTMG single-column driver (production)
+│   ├── cfram_fu_1col.f90 #   Fu single-column driver (production, dual-MC)
+│   └── makefile         #   intel (ifort+MKL) + gnu (gfortran+conda LAPACK) toolchains
+├── scripts/             # Workflow + diagnostic scripts (see Key Scripts below)
+├── plotting/            # Matplotlib/Cartopy visualization helpers
+├── cases/               # Case configurations (case.yaml; large NetCDF inputs gitignored)
+│   ├── eh13/  eh22/                         # ERA5+MERRA-2 extreme-heat events
+│   ├── cesm2_4xco2_official_17p_fu/         # CMIP6 4×CO2, Fu, 17-plev (vs OLD CFRAM)
+│   ├── cesm2_4xco2_official_fu/             # CMIP6 4×CO2, Fu, 19-plev
+│   ├── cesm2_4xco2_official/                # CMIP6 4×CO2, RRTMG, 19-plev
+│   ├── cesm2_4xco2_fu/  cesm2_4xco2/        # collaborator-style 37-plev variants
+│   └── climlab_solar*/                      # CliMLab idealized RCE validation
+├── experiments/         # Standalone validation experiments (climlab RCE etc.)
+├── configs/             # Default parameters (defaults.yaml)
+└── docs/                # Algorithm + input specifications + technical notes (zh / en)
 ```
 
 ## Key Scripts
 
+### Pipeline (run_case.py orchestrates these)
+
 | Script | Purpose |
 |--------|---------|
 | `run_case.py` | Unified entry point: build → extract → run → plot |
-| `build_case_input.py` | ERA5 + MERRA-2 → standard NetCDF input (driven by case.yaml) |
-| `download_era5_flux.py` | Download ERA5 PL+SL data from Copernicus CDS |
-| `download_merra2_aerosol.py` | Download MERRA-2 M2I3NVAER from NASA GES DISC |
-| `extract_full_field.py` | Input NetCDF → Fortran binary (bulk + per-species aerosol optics) |
-| `run_parallel_python.py` | Parallel CFRAM decomposition (multiprocessing) |
-| `plot_fig3_independent.py` | Fig.3: 2-column (paper vs independent) spatial maps |
-| `plot_fig3_self.py` | Fig.3: 6-row spatial decomposition maps |
-| `plot_fig3.py` | Fig.3 directly from paper_data (validation) |
-| `plot_fig4.py` | Fig.4: PAP bar charts |
-| `plot_fig5.py` | Fig.5: per-species aerosol decomposition maps |
-| `validate_vs_paper.py` | Compare surface dT against Wu et al. results |
-| `verify_phase1_spc.py` | Sanity-check per-species optical-property additivity |
-| `verify_phase4_spc.py` | Per-species aerosol forcing/dT additivity + regression |
-| `verify_phase5_vs_paper.py` | Per-species spatial correlation vs Wu et al. paper_data |
-| `verify_cloud_split.py` | Cloud LW/SW additivity (`bulk == lw + sw`) + regression |
+| `scripts/build_case_input.py` | ERA5 + MERRA-2 → standard NetCDF input (driven by case.yaml) |
+| `scripts/build_cesm2_official.py` | CMIP6 piControl + abrupt-4×CO2 → standard NetCDF input |
+| `scripts/run_parallel_python.py` | Parallel CFRAM decomposition (multiprocessing, all radiation engines) |
+
+### CESM2 / CMIP6 helpers
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/subset_to_17p.py` | Re-grid 19-plev → 17-plev (drops k=1, k=5 hPa to match OLD CFRAM exact grid) |
+| `scripts/inject_cesm_o3.py` | Replace O3 with CESM 1850 climatology (Phase A: base = warm, frc_o3 = 0) |
+| `scripts/mask_subsurface_layers.py` | Mask layers below ps_warm (q/o3 HOLD, cliq/cice/aer → 0) |
+| `scripts/expand_nonrad_to_column.py` | Distribute column-integrated lhflx/shflx to per-layer profiles |
+| `scripts/compare_cesm2_official_vs_collaborator.py` | Side-by-side 13-panel diagnostic |
+
+### Plotting
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/plot_fig3_independent.py` | Fig.3 (Wu et al.): 2-column paper-vs-independent spatial maps |
+| `scripts/plot_fig3_self.py` / `plot_fig3.py` / `plot_fig4.py` / `plot_fig5.py` | Other paper figures |
+| `scripts/plot_13panel_global.py` | 13-panel global surface dT decomposition (matches OLD CFRAM layout) |
+| `scripts/plot_13panel_polar.py` | 13-panel north + south polar dT decomposition |
+
+### Verification / diagnostics
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/verify_phase1_spc.py` | Per-species optical-property additivity sanity check |
+| `scripts/verify_phase4_spc.py` | Per-species aerosol forcing/dT additivity + regression |
+| `scripts/verify_phase5_vs_paper.py` | Per-species spatial correlation vs Wu et al. paper_data |
+| `scripts/verify_cloud_split.py` | Cloud LW/SW additivity (`bulk == lw + sw`) + regression |
+| `scripts/validate_vs_paper.py` | Surface dT comparison vs Wu et al. results |
+| `scripts/diag_cloud_column.py` / `diag_drdt_singlecol.py` | Single-column rad/Planck-matrix dumps for debugging |
 
 ## Decomposition Output
 

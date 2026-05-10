@@ -190,15 +190,43 @@ machine urs.earthdata.nasa.gov login <USERNAME> password <PASSWORD>
 
 ```bash
 cd fortran
-make          # 同时生成 cfram_rrtmg 和 cfram_rrtmg_1col
+make                       # 默认 RRTMG: cfram_rrtmg_1col
+make fu                    # Fu 引擎: cfram_fu_1col（runtime nlev）
+make TOOLCHAIN=intel       # ifort + MKL（hqlx220/204 生产环境，默认）
+make TOOLCHAIN=gnu         # Mac 本地 gfortran + conda LAPACK
 cd ..
 ```
 
-生成两个可执行文件：
-- `cfram_rrtmg`：全场版（nlat=81, nlon=121），用于调试 / 独立运行
-- `cfram_rrtmg_1col`：单柱版（nlat=1, nlon=1），用于 Python multiprocessing 并行调用
+可执行文件：
+- `cfram_rrtmg_1col`：RRTMG 单柱版，37-plev（默认）
+- `cfram_rrtmg_1col_n19`：RRTMG 单柱版，19-plev（CMIP6 standard plev）
+- `cfram_fu_1col`：Fu 单柱版，运行时从 `data_prep/plev.dat` 推导 nlev，单一 binary 处理任意垂直网格
+- `cfram_fu_1col_sp`：Fu 单精度调试版（与 OLD CFRAM 默认 ifort 行为对齐，validation 用）
 
-若需 ifort 编译，改用 `makefile.ifort`。
+每个 case 的 `case.yaml` 通过 `run.executable` 字段选择具体 binary：
+
+```yaml
+run:
+  executable: cfram_rrtmg_1col      # 或 cfram_fu_1col / cfram_rrtmg_1col_n19
+```
+
+**Fu 引擎 dual MC sub-column overlap**（2026-05-10 修复）：
+Fu 引擎需要两套 Monte Carlo 子列云重叠模式，分别从 `cc_base` 和
+`cc_warm` 抽样：
+
+- `base_no_cloud` —— 由 `cc_base` 抽样，用于 case 0/2/3/4/5/6/7 + drdt
+- `warm_no_cloud` —— 由 `cc_warm` 抽样，用于 case 1/8/9（warm/cloud/full）
+
+apple-to-apple 对齐 OLD CFRAM 源码（GW-base.f 写 base_no_cloud_out，
+GW-warm.f 写 warm_no_cloud_out，GW-cloud.f 读 warm 版）。如果两个状态
+共用一份 pattern（pyCFRAM 2026-05-10 之前的行为），warm 云态下 RT 看到
+的 sub-col cloud fraction 与实际加载的 cc_warm 错配，会出现 +1.8 K 的
+CLDL/CLDS 全场镜像翻转 bug。修复后单柱所有 13 个 dT 项与 collab
+`partial_T_1.grd` 偏差 ≤ 0.003 K（详见 `session_log.md` 2026-05-10 条目）。
+
+可选地把 OLD CFRAM 的精确 MC 输出（`base/warm_no_cloud_out_1.dat`）拷贝到
+`data_prep/{base,warm}_no_cloud_seed.dat`，Fu binary 会读取这两份文件做
+bit-perfect 单柱复现。
 
 ---
 

@@ -17,9 +17,12 @@ from netCDF4 import Dataset
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.config import load_case, defaults, get_plev, get_aerosol_map, get_nproc, \
-    get_fortran_dir, get_lookup_dir, PROJECT_ROOT
+    get_fortran_dir, get_lookup_dir, get_executable, PROJECT_ROOT
 from core.constants import NBND_LW, NBND_SW
 
+# Default plev / nlev (used until main() overrides with case-specific values).
+# Per-case override flows through init_worker() so multiprocessing workers
+# (both fork on Linux and spawn on macOS) see the correct nlev.
 FORTRAN_PLEV = get_plev()
 NLEV = len(FORTRAN_PLEV)
 SCON = defaults()['radiation']['scon']
@@ -169,10 +172,12 @@ def process_column(args):
     ps_b = d['ps_base'][ilat, ilon]
     solar_b = d['solar_base'][ilat, ilon]
     albedo_b = d['albedo_base'][ilat, ilon]
+    huss_b = d['huss_base'][ilat, ilon]
     ts_w = d['ts_warm'][ilat, ilon]
     ps_w = d['ps_warm'][ilat, ilon]
     solar_w = d['solar_warm'][ilat, ilon]
     albedo_w = d['albedo_warm'][ilat, ilon]
+    huss_w = d['huss_warm'][ilat, ilon]
 
     # Aerosol optics
     aer_b = {s: d['aer_base_'+s][:, ilat, ilon] for s in AEROSOL_MAP}
@@ -212,6 +217,8 @@ def process_column(args):
     ssrd_w = 300.0
     ssru_w = ssrd_w * albedo_w
 
+    # plev.dat: vertical grid (Fortran reads this; same for both base and warm)
+    write_bin(os.path.join(dp, 'plev.dat'), FORTRAN_PLEV)
     write_bin(os.path.join(dp, 't_base.dat'), t_b)
     write_bin(os.path.join(dp, 't_warm.dat'), t_w)
     write_bin(os.path.join(dp, 'hus_base.dat'), q_b)
@@ -228,6 +235,8 @@ def process_column(args):
     write_bin(os.path.join(dp, 'skt_warm.dat'), np.array([ts_w]))
     write_bin(os.path.join(dp, 'sp_base.dat'), np.array([ps_b]))
     write_bin(os.path.join(dp, 'sp_warm.dat'), np.array([ps_w]))
+    write_bin(os.path.join(dp, 'huss_base.dat'), np.array([huss_b]))
+    write_bin(os.path.join(dp, 'huss_warm.dat'), np.array([huss_w]))
     write_bin(os.path.join(dp, 'solarin_base.dat'), np.array([solar_b]))
     write_bin(os.path.join(dp, 'solarin_warm.dat'), np.array([solar_w]))
     write_bin(os.path.join(dp, 'ssrd_base.dat'), np.array([ssrd_b]))
@@ -244,6 +253,12 @@ def process_column(args):
     write_aer_bin(os.path.join(dp, 'aerosol_ssa_sw_warm.dat'), ssa_sw_w)
     write_aer_bin(os.path.join(dp, 'aerosol_g_sw_base.dat'), g_sw_b)
     write_aer_bin(os.path.join(dp, 'aerosol_g_sw_warm.dat'), g_sw_w)
+
+    # Skip flags for Fortran (Step 1: aerosol-only). Fortran reads skip_flags.txt
+    # and skips the bulk + per-species aerosol rad_driver calls when set.
+    if d.get('skip_aerosol', False):
+        with open(os.path.join(dp, 'skip_flags.txt'), 'w') as fh:
+            fh.write('skip_aerosol=1\n')
 
     # Per-species optical properties: shape (NLEV, NBND, NSPECIES), C-order.
     # Species is the LAST (fastest-varying) axis, matching Fortran READ where
@@ -276,9 +291,9 @@ def process_column(args):
     # Read output: forcing + drdt_inv, solve dT in Python
     result = {}
     rad_terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm',
-                 'cloud_lw', 'cloud_sw']
+                 'cloud_lw', 'cloud_sw', 'full']
     nonrad_terms = ['lhflx', 'shflx']
-    dyn_terms = ['atmdyn', 'sfcdyn', 'ocndyn']
+    dyn_terms = ['atmdyn', 'sfcdyn', 'ocndyn', 'dry']
     # Legacy path-B species (from paper_data nonrad_forcing.nc), 5 terms, OC merged.
     aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']
     # Fortran-produced per-species forcings (Phase 3), 6 terms with OC split.
@@ -347,17 +362,43 @@ def process_column(args):
             # Dynamic terms derived from energy conservation: F_dyn = -F_rad (= -frc_warm)
             frc_warm_col = result['frc_warm']
 
-            # Atmospheric dynamics: F_atmdyn[atm] = -frc_warm[atm], surface = 0
-            frc_atmdyn = np.zeros(NLEV + 1)
-            frc_atmdyn[:nl] = -frc_warm_col[:nl]
-            result['dT_atmdyn'] = solve_dT(frc_atmdyn)
+            # Atmospheric dynamics (OLD CFRAM Cai-Tung Fortran convention):
+            #   F_atmdyn[atm] = -ΔR_full[atm], surface = 0
+            # where ΔR_full uses T_warm in the radiation call (full-state),
+            # NOT T_base. This includes the drdt·ΔT_obs Planck response, which
+            # is essential to capture polar amplification's heat-transport signal
+            # (without it, polar atm_dyn flips sign — see lump_legacy below).
+            frc_full_col = result.get('frc_full')
+            if frc_full_col is not None and np.isfinite(frc_full_col).any():
+                frc_atmdyn = np.zeros(NLEV + 1)
+                frc_atmdyn[:nl] = -frc_full_col[:nl]
+                result['dT_atmdyn'] = solve_dT(frc_atmdyn)
+                # Lu/Cai full-state Q_dyn (no sfc zeroing): dT_dry = drdt^-1·frc_full.
+                # Closure-exact: Σ_X dT_X = ΔT_obs at first order.
+                result['dT_dry'] = solve_dT(-frc_full_col)
+            else:
+                # Fall back to legacy lumping if frc_full unavailable
+                frc_atmdyn = np.zeros(NLEV + 1)
+                frc_atmdyn[:nl] = -frc_warm_col[:nl]
+                result['dT_atmdyn'] = solve_dT(frc_atmdyn)
+                result['dT_dry'] = np.full(NLEV + 1, np.nan)
 
-            # Surface dynamics total: F_sfcdyn[sfc] = -frc_warm[sfc], atm = 0
+            # Surface dynamics — all dyn terms use frc_full (T_warm-state ΔR) to
+            # match OLD CFRAM Cai-Tung convention. Falls back to frc_warm if
+            # frc_full unavailable.
+            #   sfcdyn       = -ΔR_full[sfc] only (atm = 0)
+            #   ocndyn       = -ΔR_full[sfc] - Δlh - Δsh  ≡ OLD dt_sfc_dyn
+            #   atmdyn       = -ΔR_full[atm], sfc = 0      ≡ OLD dt_atm_dyn
+            #   dry          = atmdyn + sfcdyn (full column)  ≡ OLD dt_dyn
+            sfc_forcing_src = (frc_full_col if (frc_full_col is not None
+                                                and np.isfinite(frc_full_col).any())
+                               else frc_warm_col)
             frc_sfcdyn = np.zeros(NLEV + 1)
-            frc_sfcdyn[NLEV] = -frc_warm_col[NLEV]
+            frc_sfcdyn[NLEV] = -sfc_forcing_src[NLEV]
             result['dT_sfcdyn'] = solve_dT(frc_sfcdyn)
 
-            # Ocean circulation: F_ocndyn[sfc] = F_sfcdyn[sfc] - F_lhflx[sfc] - F_shflx[sfc]
+            # Ocean circulation ≡ OLD CFRAM dt_sfc_dyn:
+            # F_ocndyn[sfc] = -ΔR_full[sfc] - Δlh - Δsh
             lhflx_sfc = d['frc_lhflx'][NLEV, ilat, ilon] if 'frc_lhflx' in d else 0.0
             shflx_sfc = d['frc_shflx'][NLEV, ilat, ilon] if 'frc_shflx' in d else 0.0
             frc_ocndyn = np.zeros(NLEV + 1)
@@ -395,8 +436,14 @@ def process_column(args):
 
 
 def init_worker(data_dict):
-    global G
+    global G, FORTRAN_PLEV, NLEV
     G = data_dict
+    # Override module globals with case-specific values (works on both fork
+    # and spawn multiprocessing). Workers reference these in compute_aerosol_column,
+    # process_column, etc.
+    if 'fortran_plev' in data_dict:
+        FORTRAN_PLEV = data_dict['fortran_plev']
+        NLEV = data_dict['nlev']
 
 
 def main():
@@ -412,12 +459,20 @@ def main():
     nproc = args.nproc or get_nproc(cfg)
     args.nproc = nproc
 
-    print("=== Python parallel CFRAM: %s, %d procs ===" % (cfg.get('case_name', args.case), nproc))
+    # Per-case plev / nlev (default 37, override via case.yaml grid.pressure_levels).
+    global FORTRAN_PLEV, NLEV
+    FORTRAN_PLEV = get_plev(cfg)
+    NLEV = len(FORTRAN_PLEV)
 
-    # Use pre-built single-column executable (nlat=1, nlon=1)
-    exe_1col = os.path.join(FORTRAN_EXE_DIR, 'cfram_rrtmg_1col')
+    print("=== Python parallel CFRAM: %s, %d procs (nlev=%d) ===" %
+          (cfg.get('case_name', args.case), nproc, NLEV))
+
+    # Pre-built single-column executable (nlat=1, nlon=1, nlev=NLEV).
+    exe_name = get_executable(cfg)
+    exe_1col = os.path.join(FORTRAN_EXE_DIR, exe_name)
     if not os.path.exists(exe_1col):
-        print("ERROR: %s not found. Build on hqlx127 first." % exe_1col)
+        print("ERROR: %s not found. Build with: cd fortran && make NLEV=%d" %
+              (exe_1col, NLEV))
         sys.exit(1)
     print("Using executable: %s" % exe_1col)
 
@@ -435,6 +490,19 @@ def main():
     def get3d(nc, v): return np.array(nc.variables[v][0, ::-1, :, :], dtype=np.float64)
     def get2d(nc, v): return np.array(nc.variables[v][0, :, :], dtype=np.float64)
 
+    # huss = 2m specific humidity (CMIP6 standard). Apple-to-apple OLD CFRAM
+    # raw/CFRAM.zip GW-base.f L322-330 reads huss_base.dat for ph(nv1).
+    # Optional: only present in surf NCs built by build_cesm2_official.py
+    # (after huss was added to the var list). Legacy cases (cesm2_4xco2 with
+    # collaborator's data) lack it — fall back to sentinel; Fortran detects
+    # |huss| > 900 and uses ph(nv) HOLD instead.
+    def get2d_opt(nc, v, fill_shape):
+        if v in nc.variables:
+            return get2d(nc, v)
+        return np.full(fill_shape, -999.0, dtype=np.float64)
+
+    ts_b_2d = get2d(nc_bs, 'ts')   # for shape
+
     data = {
         't_base': get3d(nc_bp, 'ta_lay'), 'q_base': get3d(nc_bp, 'q'),
         'o3_base': get3d(nc_bp, 'o3'), 'cc_base': get3d(nc_bp, 'camt'),
@@ -442,18 +510,41 @@ def main():
         't_warm': get3d(nc_ap, 'ta_lay'), 'q_warm': get3d(nc_ap, 'q'),
         'o3_warm': get3d(nc_ap, 'o3'), 'cc_warm': get3d(nc_ap, 'camt'),
         'clwc_warm': get3d(nc_ap, 'cliq'), 'ciwc_warm': get3d(nc_ap, 'cice'),
-        'ts_base': get2d(nc_bs, 'ts'), 'ps_base': get2d(nc_bs, 'ps'),
+        'ts_base': ts_b_2d, 'ps_base': get2d(nc_bs, 'ps'),
         'solar_base': get2d(nc_bs, 'solar'), 'albedo_base': get2d(nc_bs, 'albedo'),
+        'huss_base': get2d_opt(nc_bs, 'huss', ts_b_2d.shape),
         'ts_warm': get2d(nc_as, 'ts'), 'ps_warm': get2d(nc_as, 'ps'),
         'solar_warm': get2d(nc_as, 'solar'), 'albedo_warm': get2d(nc_as, 'albedo'),
+        'huss_warm': get2d_opt(nc_as, 'huss', ts_b_2d.shape),
         'co2_base': get3d(nc_bp, 'co2').mean() * 1e6,
         'co2_warm': get3d(nc_ap, 'co2').mean() * 1e6,
         'exe_1col': exe_1col,
+        # Pass per-case plev / nlev to workers (works on macOS spawn too)
+        'fortran_plev': FORTRAN_PLEV,
+        'nlev': NLEV,
     }
     for s in AEROSOL_MAP:
-        data['aer_base_'+s] = get3d(nc_bp, s)
-        data['aer_warm_'+s] = get3d(nc_ap, s)
+        # Aerosols may be missing in CMIP6 raw cases; tolerate absence.
+        if s in nc_bp.variables:
+            data['aer_base_'+s] = get3d(nc_bp, s)
+            data['aer_warm_'+s] = get3d(nc_ap, s)
+        else:
+            zeros = np.zeros((NLEV, len(lats), len(lons)), dtype=np.float64)
+            data['aer_base_'+s] = zeros
+            data['aer_warm_'+s] = zeros
     nc_bp.close(); nc_bs.close(); nc_ap.close(); nc_as.close()
+
+    # Detect inactive perturbations (Step 1: aerosol only).
+    # If all 6 species are zero in BOTH base and warm states, skip aerosol
+    # rad_driver calls to save ~1+nspecies calls per column.
+    aer_max = 0.0
+    for s in AEROSOL_MAP:
+        aer_max = max(aer_max,
+                      float(np.nanmax(np.abs(data['aer_base_'+s]))),
+                      float(np.nanmax(np.abs(data['aer_warm_'+s]))))
+    data['skip_aerosol'] = aer_max < 1e-15
+    print("Aerosol detection: max|mass_mixing_ratio|=%.3e -> skip_aerosol=%s" %
+          (aer_max, data['skip_aerosol']))
 
     # Load lookup tables
     lut = {}
@@ -513,9 +604,14 @@ def main():
 
     # Result arrays
     terms = ['co2', 'q', 'ts', 'o3', 'solar', 'albedo', 'cloud', 'aerosol', 'warm',
-             'cloud_lw', 'cloud_sw']
+             'cloud_lw', 'cloud_sw', 'full']
     nonrad_terms = ['lhflx', 'shflx']
-    dyn_terms = ['atmdyn', 'sfcdyn', 'ocndyn']
+    # Naming map (pyCFRAM ↔ OLD CFRAM Cai-Tung Fortran):
+    #   atmdyn ≡ OLD dt_atm_dyn  (atm rows -ΔR_full, sfc=0)
+    #   sfcdyn  = pyCFRAM-specific (sfc row -ΔR_full only)
+    #   ocndyn ≡ OLD dt_sfc_dyn  (sfc row -ΔR_full - Δlh - Δsh)
+    #   dry    ≡ OLD dt_dyn      (full-column drdt⁻¹·frc_full = atmdyn+sfcdyn)
+    dyn_terms = ['atmdyn', 'sfcdyn', 'ocndyn', 'dry']
     aer_species_terms = ['bc', 'oc', 'sulf', 'seas', 'dust']           # path-B names
     fortran_aer_species = SPECIES_ORDER                                # ['bc','ocphi','ocpho','sulf','ss','dust']
     # Union of all species names (some overlap: bc/sulf/dust)
@@ -555,18 +651,26 @@ def main():
     nc.createDimension('lon', nlon)
     nc.createVariable('lat', 'f8', ('lat',))[:] = lats
     nc.createVariable('lon', 'f8', ('lon',))[:] = lons
-    # Surface->TOA level coordinate (matching paper_data)
-    levs = np.concatenate([FORTRAN_PLEV[::-1], [FORTRAN_PLEV[-1] + 13]])  # add ~1013 for surface
+    # NetCDF lev convention: surface→TOA + ground (1013) at end, mirroring
+    # the input *_pres.nc convention. Internal arrays (dT_out/frc_out) are in
+    # TOA→surface + surface row order — atm rows must be reversed before save
+    # so they align with lev. (Surface row stays at index NLEV → lev=1013.)
+    levs = np.concatenate([FORTRAN_PLEV[::-1], [FORTRAN_PLEV[-1] + 13]])
     nc.createVariable('lev', 'f8', ('lev',))[:] = levs
+
+    def reorder_for_save(arr):
+        """TOA→sfc atm + sfc → sfc→TOA atm + ground (matches lev order)."""
+        return np.concatenate([arr[:NLEV][::-1], arr[NLEV:NLEV + 1]], axis=0)
+
     for t in all_dT_terms:
         v = nc.createVariable('dT_'+t, 'f8', ('lev', 'lat', 'lon'))
-        v[:] = dT_out[t]
+        v[:] = reorder_for_save(dT_out[t])
     for t in terms + fortran_aer_species:
         if t in frc_out:
             v = nc.createVariable('frc_'+t, 'f8', ('lev', 'lat', 'lon'))
-            v[:] = frc_out[t]
+            v[:] = reorder_for_save(frc_out[t])
 
-    # Compute and save observed dT and dynamics residual
+    # Compute and save observed dT
     nc_bp2 = Dataset(cfg['input']['base_pres'])
     nc_ap2 = Dataset(cfg['input']['perturbed_pres'])
     nc_bs2 = Dataset(cfg['input']['base_surf'])
@@ -579,7 +683,7 @@ def main():
     nc_bp2.close(); nc_ap2.close(); nc_bs2.close(); nc_as2.close()
 
     v = nc.createVariable('dT_observed', 'f8', ('lev', 'lat', 'lon'))
-    v[:] = dT_obs
+    v[:] = reorder_for_save(dT_obs)
 
     nc.close()
     print("Saved: %s" % outfile)

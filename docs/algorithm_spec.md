@@ -1,6 +1,8 @@
 # CFRAM-A Algorithm Specification
 
-**Scope:** Fortran RRTMG engine `fortran/cfram_rrtmg.f90` in pyCFRAM. Python decomposition (Planck solve, non-radiative, residuals) is described separately in [`docs/technical_notes_zh.md`](technical_notes_zh.md).
+**Scope:** Fortran radiation engines in pyCFRAM (RRTMG: `fortran/cfram_rrtmg.f90`, single-column `cfram_rrtmg_1col.f90`; Fu: `fortran/cfram_fu_1col.f90` with sources in `fortran/Fu/`). The two engines are interchangeable per case via `case.yaml`'s `run.executable` field — see README §"Selecting the radiation engine". Sections 1–10 below describe the RRTMG path; §12 documents the Fu-specific dual-MC sub-column overlap protocol added 2026-05-10.
+
+Python decomposition (Planck solve, non-radiative, residuals) is described separately in [`docs/technical_notes_zh.md`](technical_notes_zh.md).
 
 **References:**
 - Lu, J. and Cai, M. (2009). *Climate Dynamics*, 32, 873–885. [CFRAM Part I]
@@ -273,3 +275,24 @@ The reference Fortran code was originally driven by NCL preprocessing scripts
 is fully Python (ERA5 + MERRA-2 via `scripts/build_case_input.py`, see
 [`technical_notes_zh.md`](technical_notes_zh.md) §5). Any residual references to
 `co2.txt`, NCL scripts, or Matlab `aer_opt_*.m` in older commits are obsolete.
+
+## 12. Fu Engine: Dual MC Sub-column Overlap
+
+The Fu engine (`fortran/cfram_fu_1col.f90` + `fortran/Fu/cas_fu_radiation.f`) replaces RRTMG's stochastic in-cloud handling with the OLD Fortran CFRAM Monte Carlo Independent Column Approximation (MCICA): a 100 × 100 (sub-column × layer) integer mask `no_cloud(igrid, l)` (0 = cloudy, 1 = clear) determines which sub-columns are cloudy at each level. The fraction of cloudy sub-columns at level `l` matches `cc(l)`; the vertical correlation matches the max-random overlap convention.
+
+**Two pattern buffers**, mirroring OLD CFRAM (`raw/CFRAM.zip`):
+
+| Pattern | Sampled from | Used by Fortran cases | OLD CFRAM equivalent |
+|---|---|---|---|
+| `no_cloud_base_pat` | `cc_base` | 0 (base), 2 (co2), 3 (q), 4 (o3), 5 (ts), 6 (solar), 7 (albedo), and the 18 `drdt` perturbations | `base_no_cloud_out_*.dat` (written by GW-base.f, read by GW-co2/wv/o3/solar/albedo/ts/drdt) |
+| `no_cloud_warm_pat` | `cc_warm` | 1 (warm), 8 (cloud), 9 (full) | `warm_no_cloud_out_*.dat` (written by GW-warm.f, read by GW-cloud.f) |
+
+Each per-cell run:
+1. case 0 generates the base pattern via `S_R_cloudy → ran3` from `cc_base`, saves into `no_cloud_base_pat`.
+2. case 1 generates the warm pattern from `cc_warm`, saves into `no_cloud_warm_pat`.
+3. Subsequent cases copy the appropriate pattern into the shared `no_cloud_fixed` array (in `/cloud_fix/` common block, read by `S_R_cloudy`) before the radiation call.
+4. The `drdt` block explicitly resets to base pattern.
+
+If `data_prep/{base,warm}_no_cloud_seed.dat` are present (100 × 100 INTEGER*4 records), they preempt the in-program generation, enabling bit-perfect reproduction of an external CFRAM run.
+
+**Why this matters.** Pre-2026-05-10 pyCFRAM Fu used a single MC pattern across all cases (saved from case 0). Cases 1/8/9 then radiated the cc_warm fields through a sub-column realisation drawn from cc_base — i.e. `effective_cc ≈ cc_base` while the cloud-water fields filled into "cloudy" sub-columns came from cc_warm. The mis-alignment produced a +1.8 K global-mean LW/SW mirror flip in CLDL/CLDS. Single-column DP validation at (159, 144) on the collaborator's CESM2 dataset, after the fix, reproduces the OLD `partial_T_1.grd` for all 13 dT terms within ≤ 0.003 K.

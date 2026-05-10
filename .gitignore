@@ -9,19 +9,31 @@ build/
 *.o
 *.mod
 *_dbl.obj/
+*_dbl.obj_sp/
 cfram_rrtmg
 cfram_rrtmg_1col
+cfram_rrtmg_1col_n*
+cfram_fu_1col
+cfram_fu_1col_sp
+cfram_fu_1col_singlerun
 fortran/data_output/
 fortran/data_prep/*.dat
 
 # Data directories (large, obtained separately)
 paper_data/
 era5_data/
+raw_data/
+raw/
 
-# Case runtime outputs (reproducible)
+# Case runtime outputs and large input files (reproducible from sources)
 cases/*/output/
 cases/*/figures/
+cases/*/input/
+cases/*/input/*.bak_*
 cfram_output/
+
+# Experiment runtime outputs
+experiments/*/output/
 
 # Generated outputs
 figures/

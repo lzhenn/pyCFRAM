@@ -153,6 +153,25 @@ physically meaningful surface response.
 by 6 before dividing by 86400. Missing this factor yields a 6× undercount
 of `lhflx/shflx` and flips the sign of `dT_cloud`.
 
+**Fu radiation — dual MC sub-column overlap.** When the Fu engine is
+selected (`run.executable: cfram_fu_1col`), the radiation engine maintains
+two separate Monte Carlo sub-column overlap patterns:
+
+- `base_no_cloud` — sampled (via `ran3`) from `cc_base`, used by cases 0,
+  2, 3, 4, 5, 6, 7 + the Planck-matrix `drdt` perturbations.
+- `warm_no_cloud` — sampled from `cc_warm`, used by cases 1 (warm),
+  8 (cloud), 9 (full).
+
+This mirrors the OLD Fortran CFRAM (`raw/CFRAM.zip`: GW-base.f writes
+`base_no_cloud_out`, GW-warm.f writes `warm_no_cloud_out`, GW-cloud.f
+reads warm). Using a single MC pattern across both base and warm cloud
+states (the pre-2026-05-10 pyCFRAM behaviour) misaligns the realised
+sub-column cloud fraction with the `cc_warm` field actually loaded into
+the radiation arrays, producing a ≈ +1.8 K mirror flip in CLDL/CLDS at
+the global mean. Optional `data_prep/{base,warm}_no_cloud_seed.dat` may
+preload OLD CFRAM's exact patterns for bit-perfect single-cell
+reproduction.
+
 ---
 
 ## 8. Known limitations
@@ -168,6 +187,18 @@ of `lhflx/shflx` and flips the sign of `dT_cloud`.
   optical coupling, paper's path B does not. They differ by 10–30 % on
   individual terms but the `cloud + aerosol` sum correlation stays
   above 0.95.
+- **OLD CFRAM reference run uses a corrupted O3 input.** The
+  collaborator's CESM2 4×CO2 dataset (`raw_data/cesm2_cmip6/CFRAM_xiaominghu/`)
+  has `o3_base.dat == o3_warm.dat == hus_base.dat` (md5 `1cefb325...`,
+  byte-identical). The OLD radiation routine reads water-vapor values
+  into the O3 channel, ~5 orders of magnitude too high. `frc_o3 = 0`
+  because base = warm by accident, but the absolute LW/SW radiation
+  budget (and therefore drdt and frc_full) is perturbed by the
+  mis-typed absorber. This propagates 5–15 % residual bias into
+  DYN/ATM/OCH terms. pyCFRAM's `cesm2_4xco2_*` cases use physically
+  correct O3, so they should not be expected to bit-match the OLD
+  reference at the global field level — single-column dT differences
+  ≤ 0.003 K are obtained only when both runs are fed the same broken O3.
 - (historical) `core/radiation.py`, `core/decomposition.py`,
   `core/planck_matrix.py`, `core/cfram_runner.py`, `core/fortran_io.py`
   and the `tests/` package were removed as dead code — they were

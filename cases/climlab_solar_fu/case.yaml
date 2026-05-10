@@ -1,0 +1,13 @@
+# climlab RCE +1% TOA solar — Fu radiation single-column smoke test
+case_name: climlab_solar_fu
+description: "1D climlab RCE +1% solar perturbation, Fu radiation (apple-to-apple with OLD CFRAM)"
+
+input:
+  base_pres:      input/base_pres.nc
+  base_surf:      input/base_surf.nc
+  perturbed_pres: input/perturbed_pres.nc
+  perturbed_surf: input/perturbed_surf.nc
+
+run:
+  executable: cfram_fu_1col   # Fu radiation, no aerosol partials
+  nproc: 1

@@ -14,6 +14,79 @@ and this project uses date-based milestones (no semver tags yet).
 - `CHANGELOG.md` and the `technical_notes_en.md` concise English
   counterpart of `technical_notes_zh.md`.
 
+---
+
+## 2026-05-10 — Fu radiation dual-MC fix + CESM2 4×CO2 workflow
+
+### Added
+- **Fu radiation engine** (`cfram_fu_1col`, `cfram_fu_1col.f90`,
+  `fortran/Fu/cas_fu_radiation.f`, `fu_helpers.f`, `para.file`) as a
+  drop-in alternative to the RRTMG engine. Selected per-case via
+  `case.yaml` `run.executable`. Single Fu binary infers `nlev` at
+  runtime from `data_prep/plev.dat` size, so 17/19/37-plev cases share
+  one binary.
+- **Dual MC sub-column overlap patterns.** Apple-to-apple with the
+  OLD Fortran CFRAM (`raw/CFRAM.zip` GW-base.f / GW-warm.f / GW-cloud.f):
+  the radiation calls now distinguish a `base_no_cloud` pattern (drawn
+  from `cc_base`) from a `warm_no_cloud` pattern (drawn from `cc_warm`).
+  Cases 0, 2, 3, 4, 5, 6, 7 + drdt use the base pattern; cases 1
+  (warm), 8 (cloud), 9 (full) use the warm pattern. Fixes a +1.8 K
+  global-mean mirror flip in CLDL/CLDS that pre-fix pyCFRAM showed vs
+  the OLD reference (root cause: the warm-cloud RT call was using a
+  base-cc-consistent sub-column realization, mis-aligned with the
+  cc_warm field actually loaded into the radiation arrays).
+- **Intel toolchain support** in the makefile (`make TOOLCHAIN=intel`,
+  default on hqlx220/204; `gnu` for Mac local). LAPACK linked LP64 to
+  match `-i8` integer kind.
+- **CESM2 4×CO2 workflow.** New cases
+  `cesm2_4xco2_official_{,fu,17p_fu}` plus helper scripts:
+  `scripts/build_cesm2_official.py` (CMIP6 hybrid→plev),
+  `scripts/subset_to_17p.py` (19→17 plev to match OLD CFRAM exact grid),
+  `scripts/inject_cesm_o3.py` (CESM 1850 climatology O3 — Phase A: base
+  = warm), `scripts/mask_subsurface_layers.py` (mask layers below
+  ps_warm), `scripts/expand_nonrad_to_column.py` (per-layer
+  distribution of column-integrated fluxes).
+- **13-panel plotting.** `scripts/plot_13panel_global.py` (global
+  surface dT) and `scripts/plot_13panel_polar.py` (north + south polar)
+  matching the OLD CFRAM `north.jpg` reference layout.
+- `data/cesm2_cmip6_source.py` (CMIP6 raw NetCDF reader +
+  hybrid-sigma → plev mass-conserving re-projection).
+- `core/heating_profile.py` (column-vertical distribution of
+  surface-bulk lhflx/shflx for cases without per-layer tendencies).
+- `experiments/climlab_validation/` (CliMLab idealized RCE
+  cross-validation with pyCFRAM Fortran path).
+
+### Fixed
+- **Fu radiation MC sub-column overlap mismatch** (the major fix this
+  release). Single-column DP validation at (159, 144) on the
+  collaborator's CESM2 dataset now reproduces all 13 dT terms
+  (al/wv/cld/cld_lw/cld_sw/co2/o3/solar/dyn/atm_dyn/sfc_dyn/sh/lh)
+  within ≤ 0.003 K of the reference `partial_T_1.grd`. Global re-run
+  on `cesm2_4xco2_official_17p_fu` (200 cores, 3 min) gives
+  `dT_cloud_lw` mean −0.15 K (was +1.37 K pre-fix → 1.8 K mirror).
+- `core/config.py:get_plev` now accepts a `case_cfg` and supports
+  per-case `grid.pressure_levels` override (used by 17-plev variants).
+- `fortran/cfram_rrtmg.f90`: minor cleanup (legacy full-field driver
+  retained but no longer the primary entry point).
+
+### Investigated and documented (not a code change)
+- **Collaborator's `partial_T_1.grd` benchmark uses a corrupted O3
+  input.** md5 audit found `o3_base.dat == o3_warm.dat == hus_base.dat`
+  (md5 `1cefb325...`, byte-identical), i.e. the OLD CFRAM reference
+  read water-vapor values into the O3 channel, ~5 orders of magnitude
+  too high. `frc_o3 = 0` because base = warm by accident, but the
+  absolute radiation budget (and therefore drdt and frc_full) is
+  perturbed by the mis-typed absorber. This propagates 5–15 % residual
+  bias into DYN/ATM/OCH panels — explaining residual visual differences
+  vs `north.jpg` after the dual-MC fix. pyCFRAM's `cesm2_4xco2_*` cases
+  use physically correct O3, so they should not be expected to
+  bit-match the OLD reference at the global field level. See
+  `session_log.md` 2026-05-10 entry.
+
+### Removed
+- `scripts/extract_full_field.py` (functionality merged into
+  `run_parallel_python.py` per-cell extraction).
+
 ### Removed
 - `core/aerosol_optics.py` — dead module with no imports anywhere in the
   codebase.
