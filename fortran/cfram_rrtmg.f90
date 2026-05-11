@@ -132,6 +132,38 @@
     logical :: use_q_feedback
     real(kind=rb), allocatable :: rad_1d_q_ref(:), fd_1d_q_ref(:), fu_1d_q_ref(:)
 
+    ! CO2 midstate option (RRTMG only). When data_prep/co2_midstate.flag exists,
+    ! frc_co2 is evaluated in the midstate atmosphere instead of base:
+    !   frc_co2 = R(co2_warm + T_mid + q_mid + others_mid)
+    !           - R(co2_base + T_mid + q_mid + others_mid)
+    ! Cancels the ∂²R/∂T∂C cross-term (dominant residual source in CO2 15-μm
+    ! band saturation transition zone, 300-500 hPa). Costs +2 rad_driver calls
+    ! per cell. Midstate atmosphere is built independently of use_midstate_planck
+    ! (the two options can be combined or used separately).
+    logical :: use_co2_midstate
+    real(kind=rb), allocatable :: rad_1d_co2_mw(:), fd_1d_co2_mw(:), fu_1d_co2_mw(:)
+    real(kind=rb), allocatable :: rad_1d_co2_mb(:), fd_1d_co2_mb(:), fu_1d_co2_mb(:)
+    real(kind=rb), allocatable :: fdl_1d_co2_mw(:), ful_1d_co2_mw(:)
+    real(kind=rb), allocatable :: fdl_1d_co2_mb(:), ful_1d_co2_mb(:)
+    real(kind=rb), allocatable :: fds_1d_co2_mw(:), fus_1d_co2_mw(:)
+    real(kind=rb), allocatable :: fds_1d_co2_mb(:), fus_1d_co2_mb(:)
+    real(kind=rb), allocatable :: lw_1d_co2_mw(:), sw_1d_co2_mw(:)
+    real(kind=rb), allocatable :: lw_1d_co2_mb(:), sw_1d_co2_mb(:)
+
+    ! Q midstate option (RRTMG only). When data_prep/q_midstate.flag exists,
+    ! frc_q is evaluated in midstate atmosphere instead of base:
+    !   frc_q = R(q_warm + T_mid + others_mid) - R(q_base + T_mid + others_mid)
+    ! Cancels ∂²R/∂T∂q cross-term. Mutually exclusive with use_q_feedback.
+    logical :: use_q_midstate
+    real(kind=rb), allocatable :: rad_1d_q_mw(:), fd_1d_q_mw(:), fu_1d_q_mw(:)
+    real(kind=rb), allocatable :: rad_1d_q_mb(:), fd_1d_q_mb(:), fu_1d_q_mb(:)
+    real(kind=rb), allocatable :: fdl_1d_q_mw(:), ful_1d_q_mw(:)
+    real(kind=rb), allocatable :: fdl_1d_q_mb(:), ful_1d_q_mb(:)
+    real(kind=rb), allocatable :: fds_1d_q_mw(:), fus_1d_q_mw(:)
+    real(kind=rb), allocatable :: fds_1d_q_mb(:), fus_1d_q_mb(:)
+    real(kind=rb), allocatable :: lw_1d_q_mw(:), sw_1d_q_mw(:)
+    real(kind=rb), allocatable :: lw_1d_q_mb(:), sw_1d_q_mb(:)
+
     !-------------------------------- Determine nlev from plev.dat size --------
     ! plev.dat is nlev × float64 (8 bytes). Inferring nlev from file size lets a
     ! single binary handle any vertical grid (per-case override via plev.dat).
@@ -219,11 +251,29 @@
     allocate(fd_1d_mid(nlev+1), fu_1d_mid(nlev+1))
     allocate(rad_1d_mid(nlev), lw_1d_mid(nlev), sw_1d_mid(nlev))
     allocate(rad_1d_q_ref(nlev), fd_1d_q_ref(nlev+1), fu_1d_q_ref(nlev+1))
+    allocate(rad_1d_co2_mw(nlev), fd_1d_co2_mw(nlev+1), fu_1d_co2_mw(nlev+1))
+    allocate(rad_1d_co2_mb(nlev), fd_1d_co2_mb(nlev+1), fu_1d_co2_mb(nlev+1))
+    allocate(fdl_1d_co2_mw(nlev+1), ful_1d_co2_mw(nlev+1))
+    allocate(fdl_1d_co2_mb(nlev+1), ful_1d_co2_mb(nlev+1))
+    allocate(fds_1d_co2_mw(nlev+1), fus_1d_co2_mw(nlev+1))
+    allocate(fds_1d_co2_mb(nlev+1), fus_1d_co2_mb(nlev+1))
+    allocate(lw_1d_co2_mw(nlev), sw_1d_co2_mw(nlev))
+    allocate(lw_1d_co2_mb(nlev), sw_1d_co2_mb(nlev))
+    allocate(rad_1d_q_mw(nlev), fd_1d_q_mw(nlev+1), fu_1d_q_mw(nlev+1))
+    allocate(rad_1d_q_mb(nlev), fd_1d_q_mb(nlev+1), fu_1d_q_mb(nlev+1))
+    allocate(fdl_1d_q_mw(nlev+1), ful_1d_q_mw(nlev+1))
+    allocate(fdl_1d_q_mb(nlev+1), ful_1d_q_mb(nlev+1))
+    allocate(fds_1d_q_mw(nlev+1), fus_1d_q_mw(nlev+1))
+    allocate(fds_1d_q_mb(nlev+1), fus_1d_q_mb(nlev+1))
+    allocate(lw_1d_q_mw(nlev), sw_1d_q_mw(nlev))
+    allocate(lw_1d_q_mb(nlev), sw_1d_q_mb(nlev))
 
     ! Detect midstate-Planck mode via flag file. Python writes
     ! data_prep/drdt_midstate.flag when case.yaml has radiation.drdt_eval=midstate.
     inquire(file='data_prep/drdt_midstate.flag', exist=use_midstate_planck)
     inquire(file='data_prep/q_feedback.flag',    exist=use_q_feedback)
+    inquire(file='data_prep/co2_midstate.flag',  exist=use_co2_midstate)
+    inquire(file='data_prep/q_midstate.flag',    exist=use_q_midstate)
     if (use_midstate_planck) then
         print *, '  Planck matrix: midstate (2nd-order CFRAM, drdt at (T_base+T_warm)/2)'
     else
@@ -231,6 +281,16 @@
     end if
     if (use_q_feedback) then
         print *, '  q partial: feedback (Manabe RH-fixed: frc_q computed in T_warm atmosphere)'
+    end if
+    if (use_co2_midstate) then
+        print *, '  CO2 partial: midstate (frc_co2 computed in midstate atmosphere, +2 RT calls/cell)'
+    end if
+    if (use_q_midstate) then
+        print *, '  q partial: midstate (frc_q computed in midstate atmosphere, +2 RT calls/cell)'
+    end if
+    if (use_q_feedback .and. use_q_midstate) then
+        print *, 'ERROR: q_handling cannot be both feedback and midstate'
+        stop 1
     end if
 
     !-------------------------------- Read plev values --------
@@ -480,10 +540,9 @@
                    tauaer_lw_warm(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
                    fdl_1d, ful_1d, htr_lw_1d, fd_1d_warm, fu_1d_warm, htr_1d, rad_1d_warm, lw_1d, sw_1d)
 
-               ! Planck Matrix — base state (default, 1st-order CFRAM) OR
-               ! midstate (= (base+warm)/2, 2nd-order Taylor centered at midpoint).
-               if (use_midstate_planck) then
-                   ! Build midstate atmospheric profile + surface scalars.
+               ! Build midstate atmosphere if any midstate option is active
+               ! (used by Planck Jacobian and/or CO2/q partial paths).
+               if (use_midstate_planck .or. use_co2_midstate .or. use_q_midstate) then
                    t_mid(:)        = 0.5 * (t_base(:,ilat,ilon)       + t_warm(:,ilat,ilon))
                    q_mid(:)        = 0.5 * (q_base(:,ilat,ilon)       + q_warm(:,ilat,ilon))
                    o3_mid(:)       = 0.5 * (o3_base(:,ilat,ilon)      + o3_warm(:,ilat,ilon))
@@ -500,7 +559,11 @@
                    albedo_sw_mid   = 0.5 * (albedo_sw_base(ilat,ilon)  + albedo_sw_warm(ilat,ilon))
                    zenith_mid      = 0.5 * (zenith_base(ilat,ilon)     + zenith_warm(ilat,ilon))
                    co2_mid         = 0.5 * (co2ppmv_base               + co2ppmv_warm)
+               end if
 
+               ! Planck Matrix — base state (default, 1st-order CFRAM) OR
+               ! midstate (= (base+warm)/2, 2nd-order Taylor centered at midpoint).
+               if (use_midstate_planck) then
                    ! Baseline radiation at the midstate (the +1K perturbation pivots around this).
                    call rad_driver(nlayer, iaer, icld, co2_mid, ch4ppmv, n2oppmv, ps_mid_hPa,&
                        ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
@@ -527,7 +590,7 @@
 
                   drdt_inv(1:nlayer+1,1:nlayer+1) = inv(drdt(1:nlayer+1,1:nlayer+1))
 
-               ! CO2
+               ! CO2 — default base-path partial: R(co2_warm in T_base atm)
                call rad_driver(nlayer, iaer, icld, co2ppmv_warm, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
                    ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
                    plev, t_base(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
@@ -535,15 +598,58 @@
                    tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
                    fdl_1d, ful_1d, htr_lw_1d, fd_1d_co2, fu_1d_co2, htr_1d, rad_1d_co2, lw_1d, sw_1d)
 
+               ! CO2 midstate path (use_co2_midstate=true): evaluate frc_co2 in
+               ! midstate atmosphere instead of base, cancelling ∂²R/∂T∂C.
+               ! Costs +2 rad_driver calls per cell.
+               if (use_co2_midstate) then
+                   ! co2_warm in midstate atmosphere
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_warm, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_mid, o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_co2_mw, fus_1d_co2_mw, htr_sw_1d,&
+                       fdl_1d_co2_mw, ful_1d_co2_mw, htr_lw_1d, fd_1d_co2_mw, fu_1d_co2_mw, htr_1d,&
+                       rad_1d_co2_mw, lw_1d_co2_mw, sw_1d_co2_mw)
+                   ! co2_base in midstate atmosphere
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_mid, o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_co2_mb, fus_1d_co2_mb, htr_sw_1d,&
+                       fdl_1d_co2_mb, ful_1d_co2_mb, htr_lw_1d, fd_1d_co2_mb, fu_1d_co2_mb, htr_1d,&
+                       rad_1d_co2_mb, lw_1d_co2_mb, sw_1d_co2_mb)
+               end if
+
                ! Q — water vapour partial.
-               ! Default (q_handling=independent): q_warm in T_base atmosphere
+               ! q_handling=independent (default): q_warm in T_base atmosphere
                !   (standard CFRAM). frc_q subtracts rad_1d_base.
-               ! Manabe (q_handling=feedback): q_warm in T_warm atmosphere, with
-               !   an extra reference call R(q_base + T_warm + others_base).
-               !   frc_q subtracts rad_1d_q_ref. This isolates the q radiative
-               !   impact within the warm-T atmosphere, avoiding the
-               !   supersaturation artifact of q_warm in cold T_base.
-               if (use_q_feedback) then
+               ! q_handling=feedback: q_warm in T_warm atmosphere, with an extra
+               !   reference call R(q_base + T_warm + others_base). One-sided
+               !   warm path; cross-term sign FLIPPED vs base path (not cancelled).
+               ! q_handling=midstate: q_warm in midstate atmosphere, with a
+               !   midstate q_base reference. Symmetric path → ∂²R/∂T∂q cancelled.
+               if (use_q_midstate) then
+                   ! q_warm in midstate atmosphere
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_warm(:,ilat,ilon), o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_q_mw, fus_1d_q_mw, htr_sw_1d,&
+                       fdl_1d_q_mw, ful_1d_q_mw, htr_lw_1d, fd_1d_q_mw, fu_1d_q_mw, htr_1d,&
+                       rad_1d_q_mw, lw_1d_q_mw, sw_1d_q_mw)
+                   ! q_base in midstate atmosphere
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_base(:,ilat,ilon), o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_q_mb, fus_1d_q_mb, htr_sw_1d,&
+                       fdl_1d_q_mb, ful_1d_q_mb, htr_lw_1d, fd_1d_q_mb, fu_1d_q_mb, htr_1d,&
+                       rad_1d_q_mb, lw_1d_q_mb, sw_1d_q_mb)
+                   ! Reuse rad_1d_q / fd_1d_q / fu_1d_q arrays for downstream forcing computation
+                   rad_1d_q  = rad_1d_q_mw
+                   fd_1d_q   = fd_1d_q_mw
+                   fu_1d_q   = fu_1d_q_mw
+               else if (use_q_feedback) then
                    ! Perturbed: q_warm + T_warm + others_base
                    call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
                        ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
@@ -700,11 +806,25 @@
                ! Compute forcing (W/m2)
                frc_warm(1:nlayer)    = rad_1d_warm(1:nlayer) - rad_1d_base(1:nlayer)
                frc_warm(nlayer+1)    = fd_1d_warm(nlayer+1)-fu_1d_warm(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
-               frc_co2(1:nlayer)     = rad_1d_co2(1:nlayer) - rad_1d_base(1:nlayer)
-               frc_co2(nlayer+1)     = fd_1d_co2(nlayer+1)-fu_1d_co2(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
-               ! frc_q: standard CFRAM subtracts the base radiation; Manabe
-               ! feedback subtracts the warm-T q-base reference (computed above).
-               if (use_q_feedback) then
+               ! frc_co2: default base-path (R(co2_warm,T_base) - R(base)) OR
+               !          midstate-path (R(co2_warm,T_mid) - R(co2_base,T_mid)),
+               !          cancelling the ∂²R/∂T∂C cross-term.
+               if (use_co2_midstate) then
+                   frc_co2(1:nlayer) = rad_1d_co2_mw(1:nlayer) - rad_1d_co2_mb(1:nlayer)
+                   frc_co2(nlayer+1) = (fd_1d_co2_mw(nlayer+1)-fu_1d_co2_mw(nlayer+1)) &
+                                     - (fd_1d_co2_mb(nlayer+1)-fu_1d_co2_mb(nlayer+1))
+               else
+                   frc_co2(1:nlayer) = rad_1d_co2(1:nlayer) - rad_1d_base(1:nlayer)
+                   frc_co2(nlayer+1) = fd_1d_co2(nlayer+1)-fu_1d_co2(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
+               end if
+               ! frc_q: independent subtracts rad_base; feedback subtracts the
+               ! warm-T q-base reference; midstate subtracts the midstate q-base
+               ! reference (both q legs computed in midstate atmosphere).
+               if (use_q_midstate) then
+                   frc_q(1:nlayer) = rad_1d_q_mw(1:nlayer) - rad_1d_q_mb(1:nlayer)
+                   frc_q(nlayer+1) = (fd_1d_q_mw(nlayer+1)-fu_1d_q_mw(nlayer+1)) &
+                                   - (fd_1d_q_mb(nlayer+1)-fu_1d_q_mb(nlayer+1))
+               else if (use_q_feedback) then
                    frc_q(1:nlayer) = rad_1d_q(1:nlayer) - rad_1d_q_ref(1:nlayer)
                    frc_q(nlayer+1) = fd_1d_q(nlayer+1)-fu_1d_q(nlayer+1)-(fd_1d_q_ref(nlayer+1)-fu_1d_q_ref(nlayer+1))
                else

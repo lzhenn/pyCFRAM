@@ -36,33 +36,70 @@ subroutine calc_drdt(nlayer, iaer, icld, co2, ch4, n2o, ps, ts, &
     real(kind=rb), intent(out)   :: drdt(nlayer+1,nlayer+1)
 
     integer(kind=im):: ilayer
-    real(kind=rb)   :: fdl_1k(nlayer+1)
-    real(kind=rb)   :: ful_1k(nlayer+1)
+    real(kind=rb)   :: fdl_p(nlayer+1), fdl_m(nlayer+1)
+    real(kind=rb)   :: ful_p(nlayer+1), ful_m(nlayer+1)
     real(kind=rb)   :: htr_lw_1k(nlayer)
-    real(kind=rb)   :: lw_1k(nlayer)
-    real(kind=rb)   :: t_1k(nlayer), ts_1k
+    real(kind=rb)   :: lw_p(nlayer), lw_m(nlayer)
+    real(kind=rb)   :: t_pert(nlayer), ts_p, ts_m
+    real(kind=rb), parameter :: dT_half = 0.5
+    logical :: use_centered_drdt
 
-    do ilayer = 1,nlayer
-        t_1k(1:nlayer) = t(1:nlayer)
-        t_1k(ilayer) = t(ilayer) + 1.0
-        
-        call rad_driver_lw(nlayer, iaer, icld,  co2, ch4, n2o, ps, ts, albedo_lw, &
-        plev, t_1k, q, o3, cldfrac, cldlwc,cldiwc, tauaer_lw,  &
-        fdl_1k, ful_1k, htr_lw_1k, lw_1k)
-        
-        drdt(ilayer,1:nlayer) = lw_1k(1:nlayer) - lw_base(1:nlayer)
-        drdt(ilayer,nlayer+1) = fdl_1k(nlayer+1) - ful_1k(nlayer+1) - (fdl_base(nlayer+1) - ful_base(nlayer+1))
+    ! Centered finite-difference Planck probe (T_j ± 0.5K instead of T_j + 1K).
+    ! Cancels the leading R_TT term in the FD expansion:
+    !   J^onesided = R_T|_base + 0.5·R_TT|_base + O(1)
+    !   J^centered = R_T|_base + (1/24)·R_TTT|_base + O(...)
+    ! Cost: 2× rad_driver_lw calls in this subroutine (vs 1× for one-sided).
+    inquire(file='data_prep/drdt_centered.flag', exist=use_centered_drdt)
 
-    end do
-
-    ts_1k = ts + 1.0
-
-    call rad_driver_lw(nlayer, iaer, icld,  co2, ch4, n2o, ps, ts_1k,  albedo_lw, &
-        plev, t, q, o3, cldfrac, cldlwc,cldiwc, tauaer_lw,  &
-        fdl_1k, ful_1k, htr_lw_1k, lw_1k)
-
-        drdt(nlayer+1,1:nlayer) = lw_1k(1:nlayer) - lw_base(1:nlayer)
-        drdt(nlayer+1, nlayer+1) = fdl_1k(nlayer+1) - ful_1k(nlayer+1) - (fdl_base(nlayer+1) - ful_base(nlayer+1))
+    if (use_centered_drdt) then
+        ! Atmospheric T_j ± 0.5K
+        do ilayer = 1, nlayer
+            ! +0.5K
+            t_pert(1:nlayer) = t(1:nlayer)
+            t_pert(ilayer) = t(ilayer) + dT_half
+            call rad_driver_lw(nlayer, iaer, icld, co2, ch4, n2o, ps, ts, albedo_lw, &
+                plev, t_pert, q, o3, cldfrac, cldlwc, cldiwc, tauaer_lw, &
+                fdl_p, ful_p, htr_lw_1k, lw_p)
+            ! -0.5K
+            t_pert(ilayer) = t(ilayer) - dT_half
+            call rad_driver_lw(nlayer, iaer, icld, co2, ch4, n2o, ps, ts, albedo_lw, &
+                plev, t_pert, q, o3, cldfrac, cldlwc, cldiwc, tauaer_lw, &
+                fdl_m, ful_m, htr_lw_1k, lw_m)
+            ! Centered FD over total span 1.0K
+            drdt(ilayer, 1:nlayer) = lw_p(1:nlayer) - lw_m(1:nlayer)
+            drdt(ilayer, nlayer+1) = (fdl_p(nlayer+1)-ful_p(nlayer+1)) &
+                                   - (fdl_m(nlayer+1)-ful_m(nlayer+1))
+        end do
+        ! Surface ts ± 0.5K
+        ts_p = ts + dT_half
+        call rad_driver_lw(nlayer, iaer, icld, co2, ch4, n2o, ps, ts_p, albedo_lw, &
+            plev, t, q, o3, cldfrac, cldlwc, cldiwc, tauaer_lw, &
+            fdl_p, ful_p, htr_lw_1k, lw_p)
+        ts_m = ts - dT_half
+        call rad_driver_lw(nlayer, iaer, icld, co2, ch4, n2o, ps, ts_m, albedo_lw, &
+            plev, t, q, o3, cldfrac, cldlwc, cldiwc, tauaer_lw, &
+            fdl_m, ful_m, htr_lw_1k, lw_m)
+        drdt(nlayer+1, 1:nlayer) = lw_p(1:nlayer) - lw_m(1:nlayer)
+        drdt(nlayer+1, nlayer+1) = (fdl_p(nlayer+1)-ful_p(nlayer+1)) &
+                                 - (fdl_m(nlayer+1)-ful_m(nlayer+1))
+    else
+        ! Default: one-sided FD (T + 1K), subtract base
+        do ilayer = 1, nlayer
+            t_pert(1:nlayer) = t(1:nlayer)
+            t_pert(ilayer) = t(ilayer) + 1.0
+            call rad_driver_lw(nlayer, iaer, icld, co2, ch4, n2o, ps, ts, albedo_lw, &
+                plev, t_pert, q, o3, cldfrac, cldlwc, cldiwc, tauaer_lw, &
+                fdl_p, ful_p, htr_lw_1k, lw_p)
+            drdt(ilayer, 1:nlayer) = lw_p(1:nlayer) - lw_base(1:nlayer)
+            drdt(ilayer, nlayer+1) = fdl_p(nlayer+1) - ful_p(nlayer+1) - (fdl_base(nlayer+1) - ful_base(nlayer+1))
+        end do
+        ts_p = ts + 1.0
+        call rad_driver_lw(nlayer, iaer, icld, co2, ch4, n2o, ps, ts_p, albedo_lw, &
+            plev, t, q, o3, cldfrac, cldlwc, cldiwc, tauaer_lw, &
+            fdl_p, ful_p, htr_lw_1k, lw_p)
+        drdt(nlayer+1, 1:nlayer) = lw_p(1:nlayer) - lw_base(1:nlayer)
+        drdt(nlayer+1, nlayer+1) = fdl_p(nlayer+1) - ful_p(nlayer+1) - (fdl_base(nlayer+1) - ful_base(nlayer+1))
+    end if
 
 end subroutine
      

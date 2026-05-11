@@ -156,44 +156,102 @@ def get_drdt_eval(case_cfg=None):
     return 'base'
 
 
+def get_drdt_probe(case_cfg=None):
+    """Finite-difference scheme used to build the Planck Jacobian.
+
+    Returns
+    -------
+    str : 'onesided' (default) or 'centered'
+        'onesided' = standard: J_kj ≈ [R(T_j + 1K) - R(T_j)] / 1K
+            Leading error: ½ R_TT|_T · 1K = O(R_TT) per column.
+        'centered' = ±0.5K probe: J_kj ≈ [R(T_j + 0.5K) - R(T_j - 0.5K)] / 1K
+            Cancels R_TT exactly, leading error (1/24)·R_TTT. Costs 2×
+            rad_driver_lw calls in calc_drdt vs 1×, so the Planck-Jacobian
+            stage is ~2× slower (small fraction of total cost). RRTMG-only.
+
+    Per-case via case.yaml `radiation.drdt_probe`.
+    """
+    if case_cfg:
+        v = case_cfg.get('radiation', {}).get('drdt_probe')
+        if v:
+            if v not in ('onesided', 'centered'):
+                raise ValueError(
+                    "radiation.drdt_probe must be 'onesided' or 'centered', got %r" % v)
+            return v
+    return 'onesided'
+
+
 def get_q_handling(case_cfg=None):
     """How to compute the water-vapour partial perturbation `frc_q`.
 
     Returns
     -------
-    str : 'independent' (default) or 'feedback'
+    str : 'independent' (default), 'feedback', or 'midstate'
         'independent' = standard CFRAM:
             frc_q = R(q_warm + T_base + others_base) - R(base)
             Treats q as an independent radiative variable. Correct for
             real atmospheres (ERA5, CESM2) where q has its own observed
             variability decoupled from local T.
 
-        'feedback' = Manabe RH-fixed convention:
+        'feedback' = Manabe RH-fixed (one-sided warm path):
             frc_q = R(q_warm + T_warm + others_base)
                   - R(q_base + T_warm + others_base)
-            Treats q as a feedback determined by T (q = RH × q_sat(T)).
-            Computes the q radiative impact in the warm-T atmosphere,
-            avoiding the supersaturation artifact that plagues the
-            'independent' formulation when q_warm = RH × q_sat(T_warm)
-            is plugged into a cold (T_base) atmosphere. Costs +1
-            rad_driver call per cell (the warm-T q-base reference).
+            Computes q radiative impact in the warm-T atmosphere.
+            Avoids the supersaturation artifact at T_base. Costs +1
+            rad_driver call/cell. Fixes surface closure but does NOT
+            cancel the ∂²R/∂T∂q cross-term (cross-term sign is flipped).
 
-            NOTE: changes the semantic interpretation of dT_q — it now
-            represents the q feedback evaluated at warm-T, not the
-            partial forcing from cold-T base. Closure check (Σ_X dT_X
-            ≈ dT_obs) may behave differently. Intended for idealized
-            RH-fixed models (climlab Manabe); do not use for ERA5/CESM2.
+        'midstate' = 2nd-order CFRAM q path:
+            frc_q = R(q_warm + T_mid + q_mid_other + others_mid)
+                  - R(q_base + T_mid + q_mid_other + others_mid)
+            q perturbation evaluated in the midstate atmosphere
+            (T_mid = (T_base+T_warm)/2, ...). Cancels the ∂²R/∂T∂q
+            cross-term, analogous to co2_handling=midstate. Costs +2
+            rad_driver calls/cell (q_warm and q_base, both in midstate
+            atmosphere). RRTMG-only.
 
     RRTMG-only — Fu engine ignores the flag.
     """
     if case_cfg:
         v = case_cfg.get('radiation', {}).get('q_handling')
         if v:
-            if v not in ('independent', 'feedback'):
+            if v not in ('independent', 'feedback', 'midstate'):
                 raise ValueError(
-                    "radiation.q_handling must be 'independent' or 'feedback', got %r" % v)
+                    "radiation.q_handling must be 'independent', 'feedback', or 'midstate', got %r" % v)
             return v
     return 'independent'
+
+
+def get_co2_handling(case_cfg=None):
+    """How to compute the CO2 partial perturbation `frc_co2`.
+
+    Returns
+    -------
+    str : 'base' (default) or 'midstate'
+        'base' = standard CFRAM:
+            frc_co2 = R(co2_warm + T_base + others_base) - R(base)
+            CO2 perturbation evaluated in cold base atmosphere.
+
+        'midstate' = 2nd-order CFRAM CO2 path:
+            frc_co2 = R(co2_warm + T_mid + q_mid + others_mid)
+                    - R(co2_base + T_mid + q_mid + others_mid)
+            CO2 perturbation evaluated in the *midstate* atmosphere
+            (T_mid = (T_base+T_warm)/2, q_mid = ..., etc.). This cancels
+            the ∂²R/∂T∂C cross-term between CO2 and temperature, which is
+            the dominant residual source in the 300-500 hPa CO2 15-μm
+            band saturation transition. Costs +2 rad_driver calls per
+            cell (warm & base CO2 in midstate atmosphere).
+
+    RRTMG-only — Fu engine ignores the flag.
+    """
+    if case_cfg:
+        v = case_cfg.get('radiation', {}).get('co2_handling')
+        if v:
+            if v not in ('base', 'midstate'):
+                raise ValueError(
+                    "radiation.co2_handling must be 'base' or 'midstate', got %r" % v)
+            return v
+    return 'base'
 
 
 def get_output_terms(case_cfg=None):

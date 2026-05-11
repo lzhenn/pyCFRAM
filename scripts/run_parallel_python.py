@@ -18,7 +18,7 @@ from netCDF4 import Dataset
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.config import load_case, defaults, get_plev, get_aerosol_map, get_nproc, \
     get_fortran_dir, get_lookup_dir, get_executable, get_output_terms, \
-    get_drdt_eval, get_q_handling, PROJECT_ROOT
+    get_drdt_eval, get_drdt_probe, get_q_handling, get_co2_handling, PROJECT_ROOT
 from core.constants import NBND_LW, NBND_SW
 
 # Default plev / nlev (used until main() overrides with case-specific values).
@@ -270,6 +270,19 @@ def process_column(args):
     # adding 1 rad_driver call for the warm-T q-base reference.
     if d.get('q_handling') == 'feedback':
         open(os.path.join(dp, 'q_feedback.flag'), 'w').close()
+    # Optional q midstate path: compute frc_q in midstate atmosphere
+    # (cancels ∂²R/∂T∂q cross-term). +2 rad_driver calls per cell.
+    if d.get('q_handling') == 'midstate':
+        open(os.path.join(dp, 'q_midstate.flag'), 'w').close()
+    # Optional CO2 midstate path: compute frc_co2 in midstate atmosphere
+    # (T_mid, q_mid, ...) instead of base, cancelling ∂²R/∂T∂C cross-term.
+    # +2 rad_driver calls per cell.
+    if d.get('co2_handling') == 'midstate':
+        open(os.path.join(dp, 'co2_midstate.flag'), 'w').close()
+    # Optional centered-FD Planck probe: T_j ± 0.5K instead of T_j + 1K.
+    # Cancels R_TT term in the FD expansion. 2× rad_driver_lw in calc_drdt.
+    if d.get('drdt_probe') == 'centered':
+        open(os.path.join(dp, 'drdt_centered.flag'), 'w').close()
 
     # Per-species optical properties: shape (NLEV, NBND, NSPECIES), C-order.
     # Species is the LAST (fastest-varying) axis, matching Fortran READ where
@@ -481,6 +494,10 @@ def main():
     drdt_eval = get_drdt_eval(cfg)
     # Optional: q as Manabe feedback (RRTMG only). Default 'independent'.
     q_handling = get_q_handling(cfg)
+    # Optional: CO2 partial path (RRTMG only). Default 'base'.
+    co2_handling = get_co2_handling(cfg)
+    # Optional: Planck Jacobian probe scheme (RRTMG only). Default 'onesided'.
+    drdt_probe = get_drdt_probe(cfg)
 
     print("=== Python parallel CFRAM: %s, %d procs (nlev=%d) ===" %
           (cfg.get('case_name', args.case), nproc, NLEV))
@@ -490,6 +507,10 @@ def main():
         print("Planck matrix mode: midstate (2nd-order CFRAM, RRTMG only)")
     if q_handling == 'feedback':
         print("q partial mode: feedback (Manabe RH-fixed, RRTMG only)")
+    if co2_handling == 'midstate':
+        print("CO2 partial mode: midstate (∂²R/∂T∂C cross-term cancellation, RRTMG only)")
+    if drdt_probe == 'centered':
+        print("Planck probe: centered FD (T_j ± 0.5K, cancels R_TT term, RRTMG only)")
 
     # Pre-built single-column executable (nlat=1, nlon=1, nlev=NLEV).
     exe_name = get_executable(cfg)
@@ -547,7 +568,9 @@ def main():
         'fortran_plev': FORTRAN_PLEV,
         'nlev': NLEV,
         'drdt_eval': drdt_eval,
+        'drdt_probe': drdt_probe,
         'q_handling': q_handling,
+        'co2_handling': co2_handling,
     }
     for s in AEROSOL_MAP:
         # Aerosols may be missing in CMIP6 raw cases; tolerate absence.

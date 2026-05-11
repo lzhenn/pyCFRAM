@@ -19,9 +19,9 @@ Layout
                 (CFRAM closure check; gap = linearisation residual)
 [2] CO2       : dT_co2 — RRTMG vs Fu
 [3] WV        : dT_q   — RRTMG vs Fu
-[4] Surf-T    : dT_ts  — RRTMG vs Fu  (surface-emission radiative response,
-                separately output by Fortran case 5; was implicit in `dry`
-                pre-2026-05-10)
+[4] Dry/Dyn   : dT_dry — RRTMG vs Fu  (Lu/Cai full-state Q_dyn = drdt⁻¹·frc_full;
+                implicitly absorbs all non-listed radiative + non-radiative
+                terms — surface-T emission response, convective adjustment, etc.)
 
 Usage
 -----
@@ -133,14 +133,13 @@ def main(case_names):
     axes[0].set_ylabel('Pressure (hPa)', fontsize=10)
     axes[0].legend(loc='best', fontsize=8, framealpha=0.9)
 
-    # --- Panels 2–4: dT_co2, dT_q, dT_ts per engine ---
-    # dT_ts replaces the previous "dry" panel: now that case 5 (ts only) is
-    # saved by Fortran as a real frc, plotting it directly is more
-    # informative than the (synthetic) dT_dry.
+    # --- Panels 2–4: dT_co2, dT_q, dT_dry per engine ---
+    # dT_dry = drdt⁻¹·frc_full — full-column dynamic residual. Information-rich
+    # in clear-sky RCE (carries the convective adjustment signal at mid-trop).
     for col, (key, label) in enumerate([
         ('co2', '(b) ΔT$_{CO_2}$'),
         ('q',   '(c) ΔT$_{WV}$'),
-        ('ts',  '(d) ΔT$_{T_s}$  (surface-emission rad response)'),
+        ('dry', '(d) ΔT$_{dry}$  (Lu/Cai full-state dyn residual)'),
     ], start=1):
         curves = []
         for c in cases:

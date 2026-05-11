@@ -27,15 +27,23 @@ radiation:
   drdt_eval: midstate        # 2nd-order CFRAM (Planck at (T_base+T_warm)/2).
                              # Resolved stratosphere residual (was 2-3 K, now <0.1 K).
                              # RRTMG-only.
-  # q_handling: feedback     # OPTIONAL diagnostic (Manabe RH-fixed): compute
-                             # frc_q in T_warm atmosphere instead of T_base.
-                             # Tested 2026-05-11: improves surface closure
-                             # (+0.17 K → 0.0 K) but does NOT help mid-trop
-                             # (~0.5 K residual unchanged). Conclusion: mid-trop
-                             # residual is dominated by Manabe convective-
-                             # adjustment non-linearity, not q-T cross-term.
-                             # Code path retained for future investigation;
-                             # default 'independent' (standard CFRAM).
+  drdt_probe: centered       # EXPERIMENTAL #3: Planck probe ±0.5K instead of
+                             # +1K, cancels R_TT in FD expansion. 2× rad_driver
+                             # calls in calc_drdt. RRTMG-only.
+  co2_handling: midstate     # EXPERIMENTAL: frc_co2 evaluated in midstate
+                             # atmosphere instead of T_base, cancelling the
+                             # ∂²R/∂T∂C cross-term. Targets the +0.3-0.6 K
+                             # mid-trop (450-650 hPa) residual that midstate
+                             # Planck alone doesn't resolve. +2 rad_driver
+                             # calls per cell. RRTMG-only.
+  # q_handling: midstate     # TESTED 2026-05-11 (Phase #2): frc_q in midstate
+                             # atmosphere. Result: mid-trop residual UNCHANGED
+                             # (0.237→0.242K RMS), upper-trop WORSE (3x).
+                             # Conclusion: mid-trop residual is NOT q-T
+                             # cross-term — baseline q path already correct.
+  # q_handling: feedback     # Diagnostic (Manabe RH-fixed, one-sided warm
+                             # path): improves surface (+0.17→0K) but NOT
+                             # mid-trop. Mutually exclusive with midstate.
 
 run:
   nproc: auto                # auto-caps to 1 for 1×1 grid
