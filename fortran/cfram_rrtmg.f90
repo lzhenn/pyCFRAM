@@ -104,6 +104,24 @@
 
     real(kind=rb), allocatable :: drdt(:,:), drdt_inv(:,:)
 
+    ! Second-order CFRAM (midstate-Planck) option. When data_prep/drdt_midstate.flag
+    ! exists, the Planck matrix is evaluated at the *midstate* (base+warm)/2
+    ! rather than the base state — equivalent to a 2-term Taylor expansion
+    ! centered at the midpoint, reducing the linearisation residual from
+    ! O(ΔT²) (CFRAM-1 around base) to O((ΔT/2)²) — ~4× improvement.
+    ! Cost: 1 extra rad_driver call per cell (negligible vs ~28 baseline).
+    logical :: use_midstate_planck
+    real(kind=rb), allocatable :: t_mid(:), q_mid(:), o3_mid(:)
+    real(kind=rb), allocatable :: cldfrac_mid(:), cldlwc_mid(:), cldiwc_mid(:)
+    real(kind=rb), allocatable :: tauaer_lw_mid(:,:)
+    real(kind=rb), allocatable :: tauaer_sw_mid(:,:), ssaaer_sw_mid(:,:), asmaer_sw_mid(:,:)
+    real(kind=rb), allocatable :: fdl_1d_mid(:), ful_1d_mid(:)
+    real(kind=rb), allocatable :: fds_1d_mid(:), fus_1d_mid(:)
+    real(kind=rb), allocatable :: fd_1d_mid(:), fu_1d_mid(:)
+    real(kind=rb), allocatable :: rad_1d_mid(:), lw_1d_mid(:), sw_1d_mid(:)
+    real(kind=rb) :: ts_mid, ps_mid_hPa, albedo_lw_mid, albedo_sw_mid
+    real(kind=rb) :: zenith_mid, co2_mid
+
     !-------------------------------- Determine nlev from plev.dat size --------
     ! plev.dat is nlev × float64 (8 bytes). Inferring nlev from file size lets a
     ! single binary handle any vertical grid (per-case override via plev.dat).
@@ -179,6 +197,26 @@
     allocate(rad_1d_spc(nlev), fd_1d_spc(nlev+1), fu_1d_spc(nlev+1))
     allocate(frc_spc(nlev+1,nspecies))
     allocate(drdt(nlev+1,nlev+1), drdt_inv(nlev+1,nlev+1))
+
+    ! Midstate-Planck buffers — only really used when use_midstate_planck=.true.,
+    ! but allocate unconditionally so the code paths can share variables.
+    allocate(t_mid(nlev), q_mid(nlev), o3_mid(nlev))
+    allocate(cldfrac_mid(nlev), cldlwc_mid(nlev), cldiwc_mid(nlev))
+    allocate(tauaer_lw_mid(nlev,nbndlw))
+    allocate(tauaer_sw_mid(nlev,jpband), ssaaer_sw_mid(nlev,jpband), asmaer_sw_mid(nlev,jpband))
+    allocate(fdl_1d_mid(nlev+1), ful_1d_mid(nlev+1))
+    allocate(fds_1d_mid(nlev+1), fus_1d_mid(nlev+1))
+    allocate(fd_1d_mid(nlev+1), fu_1d_mid(nlev+1))
+    allocate(rad_1d_mid(nlev), lw_1d_mid(nlev), sw_1d_mid(nlev))
+
+    ! Detect midstate-Planck mode via flag file. Python writes
+    ! data_prep/drdt_midstate.flag when case.yaml has radiation.drdt_eval=midstate.
+    inquire(file='data_prep/drdt_midstate.flag', exist=use_midstate_planck)
+    if (use_midstate_planck) then
+        print *, '  Planck matrix: midstate (2nd-order CFRAM, drdt at (T_base+T_warm)/2)'
+    else
+        print *, '  Planck matrix: base state (1st-order CFRAM, drdt at T_base)'
+    end if
 
     !-------------------------------- Read plev values --------
     open(unit=99, file='data_prep/plev.dat', form='unformatted', access='direct', recl=nlev*8)
@@ -427,12 +465,50 @@
                    tauaer_lw_warm(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
                    fdl_1d, ful_1d, htr_lw_1d, fd_1d_warm, fu_1d_warm, htr_1d, rad_1d_warm, lw_1d, sw_1d)
 
-               ! Planck Matrix
-               call calc_drdt(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
-                   ts_base(ilat,ilon),  albedo_lw_base(ilat,ilon),&
-                   plev, t_base(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
-                   cldiwc_base(:,ilat,ilon), tauaer_lw_base(:,ilat,ilon,:), lw_1d_base, fdl_1d_base, ful_1d_base, &
-                   drdt(1:nlayer+1,1:nlayer+1))
+               ! Planck Matrix — base state (default, 1st-order CFRAM) OR
+               ! midstate (= (base+warm)/2, 2nd-order Taylor centered at midpoint).
+               if (use_midstate_planck) then
+                   ! Build midstate atmospheric profile + surface scalars.
+                   t_mid(:)        = 0.5 * (t_base(:,ilat,ilon)       + t_warm(:,ilat,ilon))
+                   q_mid(:)        = 0.5 * (q_base(:,ilat,ilon)       + q_warm(:,ilat,ilon))
+                   o3_mid(:)       = 0.5 * (o3_base(:,ilat,ilon)      + o3_warm(:,ilat,ilon))
+                   cldfrac_mid(:)  = 0.5 * (cldfrac_base(:,ilat,ilon) + cldfrac_warm(:,ilat,ilon))
+                   cldlwc_mid(:)   = 0.5 * (cldlwc_base(:,ilat,ilon)  + cldlwc_warm(:,ilat,ilon))
+                   cldiwc_mid(:)   = 0.5 * (cldiwc_base(:,ilat,ilon)  + cldiwc_warm(:,ilat,ilon))
+                   tauaer_lw_mid(:,:) = 0.5 * (tauaer_lw_base(:,ilat,ilon,:) + tauaer_lw_warm(:,ilat,ilon,:))
+                   tauaer_sw_mid(:,:) = 0.5 * (tauaer_sw_base(:,ilat,ilon,:) + tauaer_sw_warm(:,ilat,ilon,:))
+                   ssaaer_sw_mid(:,:) = 0.5 * (ssaaer_sw_base(:,ilat,ilon,:) + ssaaer_sw_warm(:,ilat,ilon,:))
+                   asmaer_sw_mid(:,:) = 0.5 * (asmaer_sw_base(:,ilat,ilon,:) + asmaer_sw_warm(:,ilat,ilon,:))
+                   ts_mid          = 0.5 * (ts_base(ilat,ilon)         + ts_warm(ilat,ilon))
+                   ps_mid_hPa      = 0.5 * (ps_base(ilat,ilon)         + ps_warm(ilat,ilon)) / 100.0
+                   albedo_lw_mid   = 0.5 * (albedo_lw_base(ilat,ilon)  + albedo_lw_warm(ilat,ilon))
+                   albedo_sw_mid   = 0.5 * (albedo_sw_base(ilat,ilon)  + albedo_sw_warm(ilat,ilon))
+                   zenith_mid      = 0.5 * (zenith_base(ilat,ilon)     + zenith_warm(ilat,ilon))
+                   co2_mid         = 0.5 * (co2ppmv_base               + co2ppmv_warm)
+
+                   ! Baseline radiation at the midstate (the +1K perturbation pivots around this).
+                   call rad_driver(nlayer, iaer, icld, co2_mid, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_mid, o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_mid, fus_1d_mid, htr_sw_1d,&
+                       fdl_1d_mid, ful_1d_mid, htr_lw_1d, fd_1d_mid, fu_1d_mid, htr_1d,&
+                       rad_1d_mid, lw_1d_mid, sw_1d_mid)
+
+                   ! Planck Jacobian at midstate.
+                   call calc_drdt(nlayer, iaer, icld, co2_mid, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, albedo_lw_mid,&
+                       plev, t_mid, q_mid, o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_lw_mid, lw_1d_mid, fdl_1d_mid, ful_1d_mid, &
+                       drdt(1:nlayer+1,1:nlayer+1))
+               else
+                   ! Default: 1st-order CFRAM, Planck at base state.
+                   call calc_drdt(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
+                       ts_base(ilat,ilon),  albedo_lw_base(ilat,ilon),&
+                       plev, t_base(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
+                       cldiwc_base(:,ilat,ilon), tauaer_lw_base(:,ilat,ilon,:), lw_1d_base, fdl_1d_base, ful_1d_base, &
+                       drdt(1:nlayer+1,1:nlayer+1))
+               end if
 
                   drdt_inv(1:nlayer+1,1:nlayer+1) = inv(drdt(1:nlayer+1,1:nlayer+1))
 

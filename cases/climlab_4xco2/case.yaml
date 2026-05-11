@@ -24,6 +24,10 @@ radiation:
                              # closure: Σ_X dT_X = dT_obs requires dT_ts).
                              # cloud / aerosol / o3 / albedo / solar rows are
                              # always zero so they're filtered.
+  drdt_eval: midstate        # 2nd-order CFRAM (Planck at (T_base+T_warm)/2).
+                             # For 4× CO2 the linearisation residual at base
+                             # state was ~0.5–1 K mid-trop; midstate should
+                             # cut that to ~0.1–0.2 K. RRTMG-only.
 
 run:
   nproc: auto                # auto-caps to 1 for 1×1 grid

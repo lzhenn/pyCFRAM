@@ -17,7 +17,8 @@ from netCDF4 import Dataset
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.config import load_case, defaults, get_plev, get_aerosol_map, get_nproc, \
-    get_fortran_dir, get_lookup_dir, get_executable, get_output_terms, PROJECT_ROOT
+    get_fortran_dir, get_lookup_dir, get_executable, get_output_terms, \
+    get_drdt_eval, PROJECT_ROOT
 from core.constants import NBND_LW, NBND_SW
 
 # Default plev / nlev (used until main() overrides with case-specific values).
@@ -260,6 +261,12 @@ def process_column(args):
         with open(os.path.join(dp, 'skip_flags.txt'), 'w') as fh:
             fh.write('skip_aerosol=1\n')
 
+    # Optional 2nd-order CFRAM: evaluate Planck matrix at midstate
+    # (T_base+T_warm)/2 instead of base state. RRTMG checks for the
+    # existence of this file; Fu currently ignores it.
+    if d.get('drdt_eval') == 'midstate':
+        open(os.path.join(dp, 'drdt_midstate.flag'), 'w').close()
+
     # Per-species optical properties: shape (NLEV, NBND, NSPECIES), C-order.
     # Species is the LAST (fastest-varying) axis, matching Fortran READ where
     # `isp` is the innermost implied-DO loop index. Species order is
@@ -466,11 +473,15 @@ def main():
     # Optional: case.yaml radiation.output_terms restricts which dT/frc
     # variables are written to cfram_result.nc. None = write all (default).
     output_terms = get_output_terms(cfg)
+    # Optional: 2nd-order CFRAM via midstate-Planck (RRTMG only). Default 'base'.
+    drdt_eval = get_drdt_eval(cfg)
 
     print("=== Python parallel CFRAM: %s, %d procs (nlev=%d) ===" %
           (cfg.get('case_name', args.case), nproc, NLEV))
     if output_terms is not None:
         print("Output filter active: writing only dT/frc for %s" % output_terms)
+    if drdt_eval == 'midstate':
+        print("Planck matrix mode: midstate (2nd-order CFRAM, RRTMG only)")
 
     # Pre-built single-column executable (nlat=1, nlon=1, nlev=NLEV).
     exe_name = get_executable(cfg)
@@ -527,6 +538,7 @@ def main():
         # Pass per-case plev / nlev to workers (works on macOS spawn too)
         'fortran_plev': FORTRAN_PLEV,
         'nlev': NLEV,
+        'drdt_eval': drdt_eval,
     }
     for s in AEROSOL_MAP:
         # Aerosols may be missing in CMIP6 raw cases; tolerate absence.

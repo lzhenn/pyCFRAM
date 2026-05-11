@@ -132,6 +132,30 @@ def get_executable(case_cfg=None):
     return 'cfram_rrtmg_1col'
 
 
+def get_drdt_eval(case_cfg=None):
+    """Where to evaluate the Planck matrix `∂R/∂T`.
+
+    Returns
+    -------
+    str : 'base' (default, 1st-order CFRAM) or 'midstate'
+        'midstate' = (T_base + T_warm)/2 — equivalent to a 2-term Taylor
+        expansion centered at the midpoint, reducing the linearisation
+        residual from O(ΔT²) to O((ΔT/2)²) (~4× improvement). Currently
+        supported by the RRTMG engine only; the Fu engine ignores the flag
+        and always uses base.
+
+    Per-case via case.yaml `radiation.drdt_eval`.
+    """
+    if case_cfg:
+        v = case_cfg.get('radiation', {}).get('drdt_eval')
+        if v:
+            if v not in ('base', 'midstate'):
+                raise ValueError(
+                    "radiation.drdt_eval must be 'base' or 'midstate', got %r" % v)
+            return v
+    return 'base'
+
+
 def get_output_terms(case_cfg=None):
     """List of dT_*/frc_* terms to write to cfram_result.nc, or None for all.
 
