@@ -50,6 +50,19 @@ radiation:
                                  # (omit for "everything"; useful for clear-sky RCE
                                  # where cloud / aerosol / o3 rows are always zero)
 
+  # Optional higher-order CFRAM options (all RRTMG-only, default = standard 1st-order
+  # CFRAM; only useful for clear-sky single-column validation where the linearisation
+  # residual is the dominant error source — for real-atmosphere cases keep defaults).
+  drdt_eval:   midstate          # Planck Jacobian at (T_base+T_warm)/2; cancels R_TT
+                                 # (single-variable 2nd-order). Resolves the
+                                 # stratosphere residual.
+  drdt_probe:  centered          # ±0.5K probe in calc_drdt instead of +1K one-sided;
+                                 # cancels the R_TT FD term in the Jacobian itself.
+  co2_handling: midstate         # frc_co2 evaluated in midstate atmosphere; cancels
+                                 # the ∂²R/∂T∂C cross-term (dominant mid-trop source).
+  # q_handling: midstate / feedback   # Diagnostic only. midstate makes upper-trop
+                                 # worse on RCE; feedback flips R_Tq sign vs base.
+
 run:
   nproc: auto                    # auto-caps to grid size (1×1 → sync, no Pool spin-up)
 ```
@@ -194,21 +207,34 @@ single-column dual-MC validation at (159, 144) reproduces `partial_T_1.grd` for 
 
 ## CliMLab Single-Column RCE Validation
 
-Idealized clear-sky radiative-convective equilibrium decomposition for sanity-checking pyCFRAM's CFRAM math against a known-correct reference. Provides a 1×1 column where ECS ≈ 4-5 K can be verified to close energy balance within ~1%.
+Idealized clear-sky radiative-convective equilibrium decomposition for sanity-checking pyCFRAM's CFRAM math against a known-correct reference. A 1×1 column where ΔTs ≈ +4.59 K (4×CO2 vs 1×CO2 Manabe-fixed RH) can be verified to close energy balance to within ~0.2 K mid-trop with the higher-order CFRAM options enabled.
 
 ```bash
 # 1. Run climlab RCE at 1×CO2 (348 ppm) and 4×CO2 (1392 ppm). Writes climlab
-#    native NetCDFs + pyCFRAM standard input directly into both case dirs.
+#    native NetCDFs + pyCFRAM standard input directly into both case dirs
+#    (climlab default 30-level sigma grid, no Fortran rebuild required).
 /path/to/conda/python experiments/climlab_validation/run_rce_4xco2.py
 
-# 2. Decompose with each radiation engine (single-cell auto-detected)
-python3 run_case.py climlab_4xco2     --step run     # RRTMG  → ~1.5 s
-python3 run_case.py climlab_4xco2_fu  --step run     # Fu     → ~2 s
+# 2. Decompose with each radiation engine (single-cell auto-detected → 1.5-2 s)
+python3 run_case.py climlab_4xco2     --step run     # RRTMG
+python3 run_case.py climlab_4xco2_fu  --step run     # Fu
+
+# 3. Visualise vertical profile (4-panel: Σ closure + co2 + q + dry)
+python3 scripts/plot_singlecol_profile.py climlab_4xco2
 ```
 
-Verified closure (`dT_co2 + dT_q + dT_dry ≈ dT_observed`):
-- climlab_4xco2 (RRTMG): residual −0.05 K (1.1%)
-- climlab_4xco2_fu (Fu): residual +0.05 K (1.2%)
+**Closure verification** (`dT_co2 + dT_q + dT_dry ≈ dT_observed` in mid-trop, RMS over 450–650 hPa):
+
+| Configuration                                                               | mid-trop RMS | upper-trop RMS |
+|-----------------------------------------------------------------------------|:------------:|:--------------:|
+| 1st-order CFRAM (baseline)                                                  | 0.45 K       | 0.07 K         |
+| + `drdt_eval: midstate` (single-variable 2nd-order)                         | 0.45 K       | 0.07 K *       |
+| + `co2_handling: midstate` (cancels ∂²R/∂T∂C cross-term)                    | 0.24 K       | 0.04 K         |
+| + `drdt_probe: centered` (cancels R_TT in FD Planck probe)                  | **0.21 K**   | **0.02 K**     |
+
+\* midstate Planck alone resolves the stratosphere residual (2.3 → 0.7 K) but not mid-trop, which is dominated by the CO2-T cross-term (residue absorbed once `co2_handling: midstate` is added).
+
+The remaining ~0.2 K mid-trop residual is the **physical floor of 1st-order CFRAM** for clear-sky RCE: climlab convective-adjustment mass redistribution + R_TTT high-order + Clausius–Clapeyron quadratic terms that cannot be cancelled within a one-step Taylor expansion.
 
 The two engines differ by ~10-15 % on individual `dT_co2` / `dT_q` magnitudes (different RT solvers) but agree on the total ECS-equivalent response to within numerical noise — a useful cross-check independent of the OLD CFRAM reference.
 
@@ -234,7 +260,8 @@ pyCFRAM/
 │   ├── cesm2_4xco2_official_fu/             # CMIP6 4×CO2, Fu, 19-plev
 │   ├── cesm2_4xco2_official/                # CMIP6 4×CO2, RRTMG, 19-plev
 │   ├── cesm2_4xco2_fu/  cesm2_4xco2/        # collaborator-style 37-plev variants
-│   └── climlab_solar*/                      # CliMLab idealized RCE validation
+│   ├── climlab_4xco2/  climlab_4xco2_fu/    # CliMLab 1×→4×CO2 clear-sky RCE (single column)
+│   └── climlab_solar/  climlab_solar_fu/    # CliMLab solar-constant perturbation (single column)
 ├── experiments/         # Standalone validation experiments (climlab RCE etc.)
 ├── configs/             # Default parameters (defaults.yaml)
 └── docs/                # Algorithm + input specifications + technical notes (zh / en)

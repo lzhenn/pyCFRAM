@@ -32,11 +32,12 @@ Wu et al. 2025 (the extreme-heat-event application reproduced here).
 ## 2. Architecture
 
 ```
-Fortran RRTMG engine (per grid point, fortran/cfram_rrtmg_1col)
+Fortran radiation engine (per grid point) — RRTMG or Fu, picked by case.yaml
   ├── base + perturbed + 8 partial-perturbation rad_driver calls
   ├── Planck matrix (∂R/∂T) via nlayer+1 LW-only perturbations
-  ├── 6 per-species aerosol perturbation calls
-  └── cloud LW/SW snapshot (zero extra RRTMG invocations)
+  ├── 6 per-species aerosol perturbation calls (RRTMG only)
+  ├── cloud LW/SW snapshot (zero extra RRTMG invocations)
+  └── Fu only: dual MC sub-column overlap patterns (base + warm)
   → writes 17 forcings (9 bulk + 2 cloud_lw/sw + 6 species) + drdt_inv
 
 Python (scripts/run_parallel_python.py)
@@ -70,8 +71,17 @@ Prerequisites:
 Build:
 
 ```bash
-cd fortran && make && cd ..   # produces cfram_rrtmg and cfram_rrtmg_1col
+cd fortran
+make                       # RRTMG single-column (default): cfram_rrtmg_1col
+make fu                    # Fu single-column: cfram_fu_1col
+make TOOLCHAIN=gnu         # Mac / gfortran-only hosts (conda LAPACK)
+make TOOLCHAIN=intel       # HPC ifort+MKL (default; e.g. hqlx220)
+cd ..
 ```
+
+Both binaries infer `nlev` at runtime from `data_prep/plev.dat` size, so a
+single binary handles any vertical grid (17 / 19 / 30 / 37 / ...) without
+recompile.
 
 ---
 
@@ -223,19 +233,84 @@ Distilled from `technical_notes_zh.md` §13:
 
 ---
 
-## 10. Remote operations (HKUST-specific)
+## 10. Single-column climlab validation
+
+A clear-sky radiative-convective equilibrium (RCE) sanity check that runs in
+1.5–2 s, independent of any external reference (no `paper_data/`, no OLD
+CFRAM). It pairs two climlab columns (1×CO2 = 348 ppm, 4×CO2 = 1392 ppm,
+Manabe RH-fixed, ConvectiveAdjustment 6.5 K/km, ΔTs ≈ +4.59 K) and writes
+pyCFRAM-format NetCDFs straight into `cases/climlab_4xco2/input/` and
+`cases/climlab_4xco2_fu/input/`.
+
+### Run
+
+```bash
+# 1. Solve two RCE equilibria → write pyCFRAM input (~30 s for both)
+/path/to/conda/python experiments/climlab_validation/run_rce_4xco2.py
+
+# 2. Decompose with each engine (single-cell auto-detected: no mp.Pool spin-up)
+python3 run_case.py climlab_4xco2     --step run     # RRTMG
+python3 run_case.py climlab_4xco2_fu  --step run     # Fu
+
+# 3. 4-panel vertical-profile diagnostic (Σ closure + co2 + q + dry)
+python3 scripts/plot_singlecol_profile.py climlab_4xco2
+python3 scripts/plot_singlecol_profile.py climlab_4xco2 climlab_4xco2_fu   # overlay both
+```
+
+### Higher-order CFRAM options (RCE only)
+
+Single-column clear-sky cases expose the linearisation residual of 1st-order
+CFRAM, which gets hidden by aerosol/cloud/dynamics in real-atmosphere
+applications. pyCFRAM offers four opt-in `radiation:` flags that
+progressively reduce specific Taylor-expansion terms; all default to the
+standard 1st-order behaviour, and **none should be enabled for ERA5/CESM2
+runs** — they assume the radiation problem is near-equilibrium with no
+non-radiative coupling.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `drdt_eval: midstate` | `base` | Planck Jacobian at (T_base+T_warm)/2. Cancels the single-variable R_TT term (1-variable 2nd-order Taylor). +1 rad_driver call/cell. |
+| `drdt_probe: centered` | `onesided` | T_j ± 0.5K centred FD inside `calc_drdt` instead of +1K one-sided. Cancels R_TT in the Jacobian construction itself. 2× rad_driver_lw calls in calc_drdt. |
+| `co2_handling: midstate` | `base` | `frc_co2 = R(T_mid, q_mid, co2_warm) − R(T_mid, q_mid, co2_base)` instead of in the cold base atmosphere. Cancels the ∂²R/∂T∂C cross-term. +2 rad_driver calls/cell. |
+| `q_handling: midstate` / `feedback` | `independent` | Diagnostic only. `midstate` makes upper-trop closure 3× worse on Manabe RH-fixed RCE — the base-path R_Tq cross-term aligns with the constrained-RH solution by accident, so cancellation removes a "correct" contribution. `feedback` flips the sign of R_Tq (one-sided warm path). |
+
+### Verified closure
+
+`dT_obs − (dT_co2 + dT_q + dT_ts + dT_dry)` RMS by altitude band, on
+`climlab_4xco2` (RRTMG):
+
+| Configuration | mid-trop (450–650 hPa) | upper-trop (200–400 hPa) | strato (<200 hPa) |
+|---|:---:|:---:|:---:|
+| Baseline 1st-order | 0.45 K | 0.07 K | 0.30 K |
+| + `drdt_eval: midstate` | 0.45 K | 0.07 K | **0.28 K** (stratosphere fixed) |
+| + `co2_handling: midstate` | **0.24 K (-47 %)** | 0.04 K | 0.28 K |
+| + `drdt_probe: centered` | **0.21 K (-55 %)** | **0.02 K (-68 %)** | **0.25 K** |
+
+The remaining ~0.2 K mid-trop residual is the physical floor of 1st-order
+CFRAM on this setup: climlab convective-adjustment mass redistribution
+(non-radiative, fundamentally outside the J⁻¹·ΔR framework), R_TTT
+high-order in T, and Clausius–Clapeyron quadratic in Δq. Closing further
+requires a 2nd-order CFRAM with an explicit Hessian — structurally a
+different algorithm. See `temp.md` / the experiment series notes for the
+full Taylor-expansion derivation and per-altitude diagnostics.
+
+---
+
+## 11. Remote operations (HKUST-specific)
 
 Production runs happen on the `hqlx*` cluster:
 
-- Edit locally → `rsync` to `mini` (macOS jump box) → `rsync` to
-  `hqlx204` or similar. **Always start the sync from the Mac**; a direct
-  `ssh mini 'rsync ...'` will use mini's possibly-stale copy.
-- Compile on `hqlx127` (gfortran 4.8.5 is what the pre-built object files
-  in `linux_gfortran_gfortran_dbl.obj/` were generated with); run on
-  `hqlx204` (256 cores, `netCDF4` works).
-- On `hqlx74` / `hqlx127` the system GLIBC is too old for modern `netCDF4`
-  wheels; do only compilation there.
+- Edit locally → `rsync` Mac → `mini` (macOS jump box) → `mini` → `hqlx*`.
+  **Always start the sync from the Mac**; a direct `ssh mini 'rsync ...'`
+  uses mini's possibly-stale copy.
+- Default production host: **`hqlx220`** (384 cores, ifort 2022.2 + MKL
+  LP64 + netCDF4). Source `/home/lzhenn/.bashrc_liquor_i22wrf415` before
+  `make` / `python3 run_case.py`. Backup hosts: `hqlx204` (256 cores,
+  gfortran only; rebuild with `make TOOLCHAIN=gnu`), `hqlx221–223`.
+- A single Fortran binary handles any vertical grid at runtime — `nlev` is
+  inferred from `data_prep/plev.dat` (8 bytes per level) on launch. No
+  per-grid rebuild needed.
 
-This is mentioned here because the checked-in compiled binaries
-(`cfram_rrtmg`, `cfram_rrtmg_1col`) are ephemeral artefacts of that
-workflow; a fresh clone on any system should run `cd fortran && make`.
+Checked-in compiled binaries are **not** committed; a fresh clone on any
+system runs `cd fortran && make` (intel by default, `TOOLCHAIN=gnu` on Mac
+or any gfortran-only host).
