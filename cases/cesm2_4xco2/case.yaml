@@ -1,0 +1,20 @@
+# CESM2 4×CO2 idealized experiment (input provided externally)
+case_name: CESM2_4xCO2
+description: "CESM2 4xCO2 vs piControl, full global field; input prebuilt by collaborator"
+
+# No source block: input NetCDF files provided directly, skip build step
+
+input:
+  base_pres: input/base_pres.nc
+  base_surf: input/base_surf.nc
+  perturbed_pres: input/perturbed_pres.nc
+  perturbed_surf: input/perturbed_surf.nc
+  nonrad_forcing: input/nonrad_forcing.nc
+
+radiation:
+  scheme: rrtmg               # default RRTMG (collaborator's CESM2 setup)
+
+plot:
+  key_region:
+    lon: [0, 360]
+    lat: [-90, 90]

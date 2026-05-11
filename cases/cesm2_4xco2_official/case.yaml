@@ -1,0 +1,38 @@
+# CESM2 abrupt-4xCO2 — built from official CMIP6 monthly raw output
+case_name: CESM2_4xCO2_official
+description: "CESM2 piControl(yr 500-599) vs abrupt-4xCO2(yr 130-149), CMIP6 raw, 19-level plev"
+
+# Source: CMIP6 raw NetCDF (ta/hus on plev19, cl/clw/cli on hybrid 32)
+source:
+  type: cesm2_cmip6
+  raw_dir: /home/lzhenn/work/ust-jumper/pyCFRAM/raw_data/cesm2_cmip6
+  pictrl_subdir: piControl
+  warm_subdir: abrupt-4XCO2
+  pictrl_years: [500, 599]      # 100-yr piControl climo
+  warm_years:   [130, 149]      # 20-yr equilibrium-period climo
+  co2_pictrl_ppm: 284.7         # CMIP6 piControl spec
+  co2_warm_ppm:   1138.8        # 4× piControl
+
+# Per-case 19-level plev (TOA→surface in pyCFRAM internal convention).
+# Matches CMIP6 plev: [1000, 925, 850, 700, ..., 5, 1] hPa reversed.
+grid:
+  pressure_levels: [1, 5, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300,
+                    400, 500, 600, 700, 850, 925, 1000]
+
+input:
+  base_pres:      input/base_pres.nc
+  base_surf:      input/base_surf.nc
+  perturbed_pres: input/perturbed_pres.nc
+  perturbed_surf: input/perturbed_surf.nc
+  nonrad_forcing: input/nonrad_forcing.nc
+
+radiation:
+  scheme: rrtmg               # default RRTMG (handles any nlev via plev.dat)
+
+run:
+  nproc: auto
+
+plot:
+  key_region:
+    lon: [0, 360]
+    lat: [-90, 90]

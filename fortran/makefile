@@ -7,17 +7,42 @@ KGSRC = dat
 # Set variables
 ################################
 
-PLATFORM = linux_gfortran
 VERSION = v5.00
 
 ##################################
-# Options for the FORTRAN compiler
+# Toolchain selection
 ##################################
+# Default: ifort+MKL (hqlx220 production).
+# Override: `make TOOLCHAIN=gnu` to use conda-gfortran+LAPACK (Mac local).
+#
+# ifort:  source /home/lzhenn/.bashrc_liquor_i22wrf415 (sets MKLROOT, PATH)
+# gnu:    needs CONDA_PREFIX or activated conda base
+TOOLCHAIN ?= intel
 
+ifeq ($(TOOLCHAIN),intel)
+PLATFORM = linux_intel
+FC = ifort
+   FCOPTS = -O2 -r8 -i8 -extend-source 132 -traceback
+   FCOPTK = -O0 -r8 -i8 -extend-source 132
+# F77 fixed-form (rrtatm.f, extra.f): force 72-col so cols 73-80 (sequence
+# numbers like FA01390) are treated as comment.
+   FCOPTF = -O2 -r8 -i8 -fixed -extend-source 72 -traceback
+# Force LP64 MKL (32-bit ints): math.f90 uses INTEGER*4 explicitly for
+# LAPACK. -qmkl=sequential with -i8 auto-picks ILP64 → would mismatch
+# and crash DLASWP/DGETRF.
+LDFLAGS = -L$(MKLROOT)/lib/intel64 -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl
+endif
+
+ifeq ($(TOOLCHAIN),gnu)
+PLATFORM = mac_gnu
+# CONDA_PREFIX must be set (conda activate base). gfortran from conda-forge.
 FC = gfortran
-   FCOPTS = -fdefault-real-8 -fdefault-double-8 -fdefault-integer-8 -g -fbacktrace -ffree-line-length-none -std=legacy
-# Compile absorption coefficient data without optimization
+   FCOPTS = -O2 -fdefault-real-8 -fdefault-double-8 -fdefault-integer-8 -ffree-line-length-none -fbacktrace -std=legacy
    FCOPTK = -O0 -fdefault-real-8 -fdefault-double-8 -fdefault-integer-8 -ffree-line-length-none -std=legacy
+# F77 fixed-form: gfortran defaults to 72-col strict mode for .f, no flag needed.
+   FCOPTF = -O2 -fdefault-real-8 -fdefault-double-8 -fdefault-integer-8 -std=legacy -fbacktrace
+LDFLAGS = -L$(CONDA_PREFIX)/lib -llapack -lblas
+endif
 
 #################
 # Executable name
@@ -245,14 +270,67 @@ OBMPTH = $(CDOTO)/$(MPRK_LW).o \
 
 $(OUTPUT) : \
 	makedir $(OBMPTH) $(OBJPTH)
-	$(FC) $(FCOPTS) -I$(CDOTO) -o $(OUTPUT) $(OBMPTH) $(OBJPTH) /usr/lib64/liblapack.so.3 /usr/lib64/libblas.so.3
-	@echo "Building single-column version (cfram_rrtmg_1col)..."
+	@echo "Linking single-column version (cfram_rrtmg_1col, runtime nlev)..."
 	@sed 's/nlat=81,nlon=121/nlat=1,nlon=1/' cfram_rrtmg.f90 | grep -v '!\$$OMP' > cfram_rrtmg_1col.f90
 	$(FC) $(FCOPTS) -I$(CDOTO) -o cfram_rrtmg_1col cfram_rrtmg_1col.f90 \
 		$(shell echo $(OBMPTH) $(OBJPTH) | tr ' ' '\n' | grep -v cfram_rrtmg.o | tr '\n' ' ') \
-		/usr/lib64/liblapack.so.3 /usr/lib64/libblas.so.3
+		$(LDFLAGS)
 	@rm -f cfram_rrtmg_1col.f90
-	@echo "Built: cfram_rrtmg and cfram_rrtmg_1col"
+	@echo "Built: cfram_rrtmg_1col (handles any nlev via plev.dat)"
+
+# Backwards-compatibility alias: cfram_rrtmg_1col_n19 → same binary as default
+# (nlev now determined at runtime). Kept so existing case.yaml `executable:
+# cfram_rrtmg_1col_n19` references still resolve.
+n19: $(OUTPUT)
+	@cp cfram_rrtmg_1col cfram_rrtmg_1col_n19 && echo "Aliased: cfram_rrtmg_1col_n19 -> cfram_rrtmg_1col"
+
+# Fu radiation single-column build (cfram_fu_1col).
+# Apple-to-apple with OLD CFRAM (raw/CFRAM.zip cas_fu_radiation.f).
+# Uses same data_prep/data_output I/O contract as RRTMG version, runtime nlev
+# via plev.dat. No aerosol perturbation (aligns with OLD CFRAM 7-partial scheme).
+FU_DIR = Fu
+FU_OBJ = $(CDOTO)/cas_fu_radiation.o $(CDOTO)/fu_helpers.o $(CDOTO)/cfram_fu_1col.o
+
+fu: makedir $(FU_OBJ)
+	@echo "Linking Fu radiation binary (cfram_fu_1col)..."
+	$(FC) $(FCOPTS) -o cfram_fu_1col $(FU_OBJ) $(LDFLAGS)
+	@echo "Built: cfram_fu_1col"
+
+$(CDOTO)/cas_fu_radiation.o: $(FU_DIR)/cas_fu_radiation.f $(FU_DIR)/para.file
+	$(FC) $(FCOPTF) -I$(FU_DIR) -fno-automatic -c $(FU_DIR)/cas_fu_radiation.f -o $(CDOTO)/cas_fu_radiation.o
+
+$(CDOTO)/fu_helpers.o: $(FU_DIR)/fu_helpers.f $(FU_DIR)/para.file
+	$(FC) $(FCOPTF) -I$(FU_DIR) -fno-automatic -c $(FU_DIR)/fu_helpers.f -o $(CDOTO)/fu_helpers.o
+
+$(CDOTO)/cfram_fu_1col.o: cfram_fu_1col.f90
+	$(FC) $(FCOPTS) -I$(CDOTO) -c cfram_fu_1col.f90 -o $(CDOTO)/cfram_fu_1col.o
+
+
+# Single-precision Fu build (cfram_fu_1col_sp). Apple-to-apple with OLD CFRAM
+# raw/CFRAM.zip's bianyi.sh (default ifort, no -r8 -i8 → 4-byte real/integer).
+# Used to verify whether SW/LW cloud partition discrepancy is precision-driven.
+# I/O contract differs from -r8 -i8 build: f32 .dat (recl=n*4), int32 headers.
+FCOPTS_SP = -extend-source 132
+FCOPTF_SP =
+CDOTO_SP = $(CDOTO)_sp
+FU_OBJ_SP = $(CDOTO_SP)/cas_fu_radiation.o $(CDOTO_SP)/fu_helpers.o $(CDOTO_SP)/cfram_fu_1col_sp.o
+
+fu_sp: makedir_sp $(FU_OBJ_SP)
+	@echo "Linking SP Fu radiation binary (cfram_fu_1col_sp)..."
+	$(FC) $(FCOPTS_SP) -o cfram_fu_1col_sp $(FU_OBJ_SP) $(LDFLAGS)
+	@echo "Built: cfram_fu_1col_sp"
+
+makedir_sp:
+	@if [ ! -d $(CDOTO_SP) ]; then mkdir $(CDOTO_SP); fi
+
+$(CDOTO_SP)/cas_fu_radiation.o: $(FU_DIR)/cas_fu_radiation.f $(FU_DIR)/para.file
+	$(FC) $(FCOPTF_SP) -I$(FU_DIR) -c $(FU_DIR)/cas_fu_radiation.f -o $(CDOTO_SP)/cas_fu_radiation.o
+
+$(CDOTO_SP)/fu_helpers.o: $(FU_DIR)/fu_helpers.f $(FU_DIR)/para.file
+	$(FC) $(FCOPTF_SP) -I$(FU_DIR) -c $(FU_DIR)/fu_helpers.f -o $(CDOTO_SP)/fu_helpers.o
+
+$(CDOTO_SP)/cfram_fu_1col_sp.o: cfram_fu_1col_sp.f90
+	$(FC) $(FCOPTS_SP) -I$(CDOTO_SP) -c cfram_fu_1col_sp.f90 -o $(CDOTO_SP)/cfram_fu_1col_sp.o
 
 
 #################
@@ -496,11 +574,11 @@ $(CDOTO)/$(CRTM_LW).o : $(CPATH_LW)/$(CRTM_LW).f90
 	\mv $(CRTM_LW).o $(CDOTO)
 
 $(CDOTO)/$(CATM_LW).o : $(CPATH_LW)/$(CATM_LW).f
-	$(FC) $(FCOPTS) -c $(CPATH_LW)/$(CATM_LW).f
+	$(FC) $(FCOPTF) -c $(CPATH_LW)/$(CATM_LW).f
 	\mv $(CATM_LW).o $(CDOTO)
 
 $(CDOTO)/$(CEXT_LW).o : $(CPATH_LW)/$(CEXT_LW).f
-	$(FC) $(FCOPTS) -c $(CPATH_LW)/$(CEXT_LW).f
+	$(FC) $(FCOPTF) -c $(CPATH_LW)/$(CEXT_LW).f
 	\mv $(CEXT_LW).o $(CDOTO)
 
 $(CDOTO)/$(CUTL_LW).o : $(CPATH_UTL_LW)/$(CUTL_LW).f90

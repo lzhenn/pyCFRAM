@@ -8,16 +8,18 @@
 
     implicit none
 
-    integer(kind=im),parameter :: nlat=1,nlon=1,nlev=37,ntime=1
+    integer(kind=im),parameter :: nlat=1,nlon=1,ntime=1
     integer(kind=im),parameter :: icld=2   ! 0-no cloud, 2-cloud
     integer(kind=im),parameter :: iaer=10   ! 0-no aerosol, 10-aerosol
     integer(kind=im),parameter :: nspecies=6 ! per-species: bc,ocphi,ocpho,sulf,ss,dust
     real(kind=rb),   parameter :: scon=1360.98 ! solar constant
+    integer(kind=im)           :: nlev      ! determined at runtime from plev.dat size
+    integer(kind=im)           :: plev_fsize
     integer(kind=im)           :: ilat, ilon, ilev, itime, ib, i, j
     integer(kind=im)           :: ilayer,nlayer,isp
 
     real(kind=rb) :: co2ppmv_base,co2ppmv_warm,ch4ppmv,n2oppmv
-    real(kind=rb) :: plev(nlev)
+    real(kind=rb), allocatable :: plev(:)
     real(kind=rb) :: ts_base(nlat,nlon),ts_warm(nlat,nlon)
     real(kind=rb) :: ps_base(nlat,nlon),ps_warm(nlat,nlon)
     real(kind=rb) :: albedo_lw_base(nlat,nlon),albedo_lw_warm(nlat,nlon)
@@ -26,88 +28,299 @@
     real(kind=rb) :: zenith_base(nlat,nlon), zenith_warm(nlat,nlon)
     real(kind=rb) :: swdn_surf_base(nlat,nlon),swdn_surf_warm(nlat,nlon)
     real(kind=rb) :: swup_surf_base(nlat,nlon),swup_surf_warm(nlat,nlon)
-    real(kind=rb) :: t_base(nlev,nlat,nlon), t_warm(nlev,nlat,nlon)
-    real(kind=rb) :: q_base(nlev,nlat,nlon), q_warm(nlev,nlat,nlon)
-    real(kind=rb) :: o3_base(nlev,nlat,nlon),o3_warm(nlev,nlat,nlon)
-    real(kind=rb) :: cldfrac_base(nlev,nlat,nlon), cldfrac_warm(nlev,nlat,nlon)
-    real(kind=rb) :: cldlwc_base(nlev,nlat,nlon), cldlwc_warm(nlev,nlat,nlon)
-    real(kind=rb) :: cldiwc_base(nlev,nlat,nlon), cldiwc_warm(nlev,nlat,nlon)
-    real(kind=rb) :: tauaer_sw_base(nlev,nlat,nlon,jpband),tauaer_sw_warm(nlev,nlat,nlon,jpband)
-    real(kind=rb) :: ssaaer_sw_base(nlev,nlat,nlon,jpband),ssaaer_sw_warm(nlev,nlat,nlon,jpband)
-    real(kind=rb) :: asmaer_sw_base(nlev,nlat,nlon,jpband),asmaer_sw_warm(nlev,nlat,nlon,jpband)
-    real(kind=rb) :: tauaer_lw_base(nlev,nlat,nlon,nbndlw),tauaer_lw_warm(nlev,nlat,nlon,jpband)
+    real(kind=rb), allocatable :: t_base(:,:,:), t_warm(:,:,:)
+    real(kind=rb), allocatable :: q_base(:,:,:), q_warm(:,:,:)
+    real(kind=rb), allocatable :: o3_base(:,:,:),o3_warm(:,:,:)
+    real(kind=rb), allocatable :: cldfrac_base(:,:,:), cldfrac_warm(:,:,:)
+    real(kind=rb), allocatable :: cldlwc_base(:,:,:), cldlwc_warm(:,:,:)
+    real(kind=rb), allocatable :: cldiwc_base(:,:,:), cldiwc_warm(:,:,:)
+    real(kind=rb), allocatable :: tauaer_sw_base(:,:,:,:),tauaer_sw_warm(:,:,:,:)
+    real(kind=rb), allocatable :: ssaaer_sw_base(:,:,:,:),ssaaer_sw_warm(:,:,:,:)
+    real(kind=rb), allocatable :: asmaer_sw_base(:,:,:,:),asmaer_sw_warm(:,:,:,:)
+    real(kind=rb), allocatable :: tauaer_lw_base(:,:,:,:),tauaer_lw_warm(:,:,:,:)
 
     ! Per-species aerosol optical properties. Species order must match Python writer
-    ! (SPECIES_ORDER in run_parallel_python.py / extract_full_field.py):
-    ! 1=bc, 2=ocphi, 3=ocpho, 4=sulf, 5=ss, 6=dust.
-    ! File layout on disk (from numpy tofile): C-order bytes with species fastest.
-    ! Fortran array declared with species as LAST dimension so READ loop reads
-    ! species innermost (matches disk layout).
-    real(kind=rb) :: tauaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: tauaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: ssaaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: ssaaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: asmaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: asmaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies)
-    real(kind=rb) :: tauaer_lw_base_spc(nlev,nlat,nlon,nbndlw,nspecies)
-    real(kind=rb) :: tauaer_lw_warm_spc(nlev,nlat,nlon,nbndlw,nspecies)
+    ! (SPECIES_ORDER in run_parallel_python.py): 1=bc, 2=ocphi, 3=ocpho, 4=sulf, 5=ss, 6=dust.
+    real(kind=rb), allocatable :: tauaer_sw_base_spc(:,:,:,:,:),tauaer_sw_warm_spc(:,:,:,:,:)
+    real(kind=rb), allocatable :: ssaaer_sw_base_spc(:,:,:,:,:),ssaaer_sw_warm_spc(:,:,:,:,:)
+    real(kind=rb), allocatable :: asmaer_sw_base_spc(:,:,:,:,:),asmaer_sw_warm_spc(:,:,:,:,:)
+    real(kind=rb), allocatable :: tauaer_lw_base_spc(:,:,:,:,:),tauaer_lw_warm_spc(:,:,:,:,:)
 
-    !Output: forcing only (dT solved in Python)
-    real(kind=rb) :: frc_warm_output(ntime,nlev+1,nlat,nlon), frc_co2_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_q_output(ntime,nlev+1,nlat,nlon), frc_ts_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_o3_output(ntime,nlev+1,nlat,nlon), frc_solar_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_albedo_output(ntime,nlev+1,nlat,nlon), frc_cloud_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_aerosol_output(ntime,nlev+1,nlat,nlon)
-    ! Per-species aerosol forcing outputs (Phase 3).
-    real(kind=rb) :: frc_bc_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_ocphi_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_ocpho_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_sulf_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_ss_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_dust_output(ntime,nlev+1,nlat,nlon)
-    ! Cloud LW/SW split forcing outputs
-    real(kind=rb) :: frc_cloud_lw_output(ntime,nlev+1,nlat,nlon)
-    real(kind=rb) :: frc_cloud_sw_output(ntime,nlev+1,nlat,nlon)
+    !Output: forcing only (dT solved in Python). All (ntime, nlev+1, nlat, nlon).
+    real(kind=rb), allocatable :: frc_warm_output(:,:,:,:), frc_co2_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_q_output(:,:,:,:), frc_ts_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_o3_output(:,:,:,:), frc_solar_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_albedo_output(:,:,:,:), frc_cloud_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_aerosol_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_bc_output(:,:,:,:), frc_ocphi_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_ocpho_output(:,:,:,:), frc_sulf_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_ss_output(:,:,:,:), frc_dust_output(:,:,:,:)
+    real(kind=rb), allocatable :: frc_cloud_lw_output(:,:,:,:), frc_cloud_sw_output(:,:,:,:)
 
-    ! Thread-private fixed-size work arrays (nlev+1 = 38 max)
-    real(kind=rb) :: fds_1d(nlev+1), fus_1d(nlev+1), htr_sw_1d(nlev)
-    real(kind=rb) :: fdl_1d(nlev+1), ful_1d(nlev+1), htr_lw_1d(nlev)
-    real(kind=rb) :: htr_1d(nlev), lw_1d(nlev), sw_1d(nlev)
-    real(kind=rb) :: rad_1d_base(nlev), fd_1d_base(nlev+1), fu_1d_base(nlev+1)
-    real(kind=rb) :: rad_1d_warm(nlev), fd_1d_warm(nlev+1), fu_1d_warm(nlev+1)
-    real(kind=rb) :: rad_1d_t(nlev),    fd_1d_t(nlev+1),    fu_1d_t(nlev+1)
-    real(kind=rb) :: rad_1d_q(nlev),    fd_1d_q(nlev+1),    fu_1d_q(nlev+1)
-    real(kind=rb) :: rad_1d_ts(nlev),   fd_1d_ts(nlev+1),   fu_1d_ts(nlev+1)
-    real(kind=rb) :: rad_1d_o3(nlev),   fd_1d_o3(nlev+1),   fu_1d_o3(nlev+1)
-    real(kind=rb) :: rad_1d_solar(nlev),fd_1d_solar(nlev+1),fu_1d_solar(nlev+1)
-    real(kind=rb) :: rad_1d_albedo(nlev),fd_1d_albedo(nlev+1),fu_1d_albedo(nlev+1)
-    real(kind=rb) :: rad_1d_cloud(nlev), fd_1d_cloud(nlev+1), fu_1d_cloud(nlev+1)
-    real(kind=rb) :: rad_1d_aerosol(nlev),fd_1d_aerosol(nlev+1),fu_1d_aerosol(nlev+1)
-    real(kind=rb) :: rad_1d_co2(nlev),   fd_1d_co2(nlev+1),   fu_1d_co2(nlev+1)
-    real(kind=rb) :: lw_1d_base(nlev),   fdl_1d_base(nlev+1), ful_1d_base(nlev+1)
+    ! Thread-private work arrays (size nlev or nlev+1)
+    real(kind=rb), allocatable :: fds_1d(:), fus_1d(:), htr_sw_1d(:)
+    real(kind=rb), allocatable :: fdl_1d(:), ful_1d(:), htr_lw_1d(:)
+    real(kind=rb), allocatable :: htr_1d(:), lw_1d(:), sw_1d(:)
+    real(kind=rb), allocatable :: rad_1d_base(:), fd_1d_base(:), fu_1d_base(:)
+    real(kind=rb), allocatable :: rad_1d_warm(:), fd_1d_warm(:), fu_1d_warm(:)
+    real(kind=rb), allocatable :: rad_1d_t(:),    fd_1d_t(:),    fu_1d_t(:)
+    real(kind=rb), allocatable :: rad_1d_q(:),    fd_1d_q(:),    fu_1d_q(:)
+    real(kind=rb), allocatable :: rad_1d_ts(:),   fd_1d_ts(:),   fu_1d_ts(:)
+    real(kind=rb), allocatable :: rad_1d_o3(:),   fd_1d_o3(:),   fu_1d_o3(:)
+    real(kind=rb), allocatable :: rad_1d_solar(:),fd_1d_solar(:),fu_1d_solar(:)
+    real(kind=rb), allocatable :: rad_1d_albedo(:),fd_1d_albedo(:),fu_1d_albedo(:)
+    real(kind=rb), allocatable :: rad_1d_cloud(:), fd_1d_cloud(:), fu_1d_cloud(:)
+    real(kind=rb), allocatable :: rad_1d_aerosol(:),fd_1d_aerosol(:),fu_1d_aerosol(:)
+    real(kind=rb), allocatable :: rad_1d_co2(:),   fd_1d_co2(:),   fu_1d_co2(:)
+    real(kind=rb), allocatable :: lw_1d_base(:),   fdl_1d_base(:), ful_1d_base(:)
 
-    real(kind=rb) :: frc_co2(nlev+1), frc_t(nlev+1), frc_q(nlev+1), frc_albedo(nlev+1)
-    real(kind=rb) :: frc_ts(nlev+1), frc_o3(nlev+1), frc_solar(nlev+1), frc_cloud(nlev+1)
-    real(kind=rb) :: frc_warm(nlev+1), frc_aerosol(nlev+1)
-    real(kind=rb) :: frc_cloud_lw(nlev+1), frc_cloud_sw(nlev+1)
-    ! Cloud-state LW/SW component fluxes, saved right after the cloud rad_driver call
-    real(kind=rb) :: lw_1d_cloud(nlev), sw_1d_cloud(nlev)
-    real(kind=rb) :: fdl_1d_cloud(nlev+1), ful_1d_cloud(nlev+1)
-    real(kind=rb) :: fds_1d_cloud(nlev+1), fus_1d_cloud(nlev+1)
+    real(kind=rb), allocatable :: frc_co2(:), frc_t(:), frc_q(:), frc_albedo(:)
+    real(kind=rb), allocatable :: frc_ts(:), frc_o3(:), frc_solar(:), frc_cloud(:)
+    real(kind=rb), allocatable :: frc_warm(:), frc_aerosol(:)
+    real(kind=rb), allocatable :: frc_cloud_lw(:), frc_cloud_sw(:)
+    ! Cloud-state LW/SW snapshot
+    real(kind=rb), allocatable :: lw_1d_cloud(:), sw_1d_cloud(:)
+    real(kind=rb), allocatable :: fdl_1d_cloud(:), ful_1d_cloud(:)
+    real(kind=rb), allocatable :: fds_1d_cloud(:), fus_1d_cloud(:)
 
-    ! Per-species perturbation work arrays (thread-private)
-    real(kind=rb) :: tauaer_sw_mix(nlev,jpband), ssaaer_sw_mix(nlev,jpband), asmaer_sw_mix(nlev,jpband)
-    real(kind=rb) :: tauaer_lw_mix(nlev,nbndlw)
-    real(kind=rb) :: tau_ssa_base_sw(nlev,jpband), tau_ssa_g_base_sw(nlev,jpband)
-    real(kind=rb) :: tau_ssa_mix(nlev,jpband), tau_ssa_g_mix(nlev,jpband)
-    real(kind=rb) :: rad_1d_spc(nlev), fd_1d_spc(nlev+1), fu_1d_spc(nlev+1)
-    real(kind=rb) :: frc_spc(nlev+1,nspecies)
+    ! Lu/Cai full-state perturbation arrays
+    real(kind=rb), allocatable :: rad_1d_full(:), fd_1d_full(:), fu_1d_full(:)
+    real(kind=rb), allocatable :: lw_1d_full(:), sw_1d_full(:)
+    real(kind=rb), allocatable :: fdl_1d_full(:), ful_1d_full(:)
+    real(kind=rb), allocatable :: fds_1d_full(:), fus_1d_full(:)
+    real(kind=rb), allocatable :: frc_full(:)
+    real(kind=rb), allocatable :: frc_full_output(:,:,:,:)
 
-    real(kind=rb) :: drdt(nlev+1,nlev+1), drdt_inv(nlev+1,nlev+1)
+    ! Skip flags (read from data_prep/skip_flags.txt at startup; default = run all)
+    logical :: skip_aerosol
 
-    plev = (/1.,2.,3.,5.,7.,10.,20.,30.,50.,70.,100.,125.,150.,175.,200.,&
-        225.,250.,300.,350.,400.,450.,500.,550.,600.,650.,700.,750.,775.,&
-        800.,825.,850.,875.,900.,925.,950.,975.,1000./)
+    ! Per-species perturbation work arrays
+    real(kind=rb), allocatable :: tauaer_sw_mix(:,:), ssaaer_sw_mix(:,:), asmaer_sw_mix(:,:)
+    real(kind=rb), allocatable :: tauaer_lw_mix(:,:)
+    real(kind=rb), allocatable :: tau_ssa_base_sw(:,:), tau_ssa_g_base_sw(:,:)
+    real(kind=rb), allocatable :: tau_ssa_mix(:,:), tau_ssa_g_mix(:,:)
+    real(kind=rb), allocatable :: rad_1d_spc(:), fd_1d_spc(:), fu_1d_spc(:)
+    real(kind=rb), allocatable :: frc_spc(:,:)
+
+    real(kind=rb), allocatable :: drdt(:,:), drdt_inv(:,:)
+
+    ! Second-order CFRAM (midstate-Planck) option. When data_prep/drdt_midstate.flag
+    ! exists, the Planck matrix is evaluated at the *midstate* (base+warm)/2
+    ! rather than the base state — equivalent to a 2-term Taylor expansion
+    ! centered at the midpoint, reducing the linearisation residual from
+    ! O(ΔT²) (CFRAM-1 around base) to O((ΔT/2)²) — ~4× improvement.
+    ! Cost: 1 extra rad_driver call per cell (negligible vs ~28 baseline).
+    logical :: use_midstate_planck
+    real(kind=rb), allocatable :: t_mid(:), q_mid(:), o3_mid(:)
+    real(kind=rb), allocatable :: cldfrac_mid(:), cldlwc_mid(:), cldiwc_mid(:)
+    real(kind=rb), allocatable :: tauaer_lw_mid(:,:)
+    real(kind=rb), allocatable :: tauaer_sw_mid(:,:), ssaaer_sw_mid(:,:), asmaer_sw_mid(:,:)
+    real(kind=rb), allocatable :: fdl_1d_mid(:), ful_1d_mid(:)
+    real(kind=rb), allocatable :: fds_1d_mid(:), fus_1d_mid(:)
+    real(kind=rb), allocatable :: fd_1d_mid(:), fu_1d_mid(:)
+    real(kind=rb), allocatable :: rad_1d_mid(:), lw_1d_mid(:), sw_1d_mid(:)
+    real(kind=rb) :: ts_mid, ps_mid_hPa, albedo_lw_mid, albedo_sw_mid
+    real(kind=rb) :: zenith_mid, co2_mid
+
+    ! Manabe q-feedback option (RRTMG only). When data_prep/q_feedback.flag
+    ! exists, the q partial is recomputed in the warm-T atmosphere:
+    !   frc_q = R(q_warm + T_warm + others_base) − R(q_base + T_warm + others_base)
+    ! Physically meaningful q decomposition when q is a feedback tied to T
+    ! (Manabe RH-fixed). Avoids the supersaturation artifact in the default
+    ! formulation (q_warm in T_base atmosphere). Cost: +1 rad_driver call per
+    ! cell (the warm-T q-base reference state).
+    logical :: use_q_feedback
+    real(kind=rb), allocatable :: rad_1d_q_ref(:), fd_1d_q_ref(:), fu_1d_q_ref(:)
+
+    ! CO2 midstate option (RRTMG only). When data_prep/co2_midstate.flag exists,
+    ! frc_co2 is evaluated in the midstate atmosphere instead of base:
+    !   frc_co2 = R(co2_warm + T_mid + q_mid + others_mid)
+    !           - R(co2_base + T_mid + q_mid + others_mid)
+    ! Cancels the ∂²R/∂T∂C cross-term (dominant residual source in CO2 15-μm
+    ! band saturation transition zone, 300-500 hPa). Costs +2 rad_driver calls
+    ! per cell. Midstate atmosphere is built independently of use_midstate_planck
+    ! (the two options can be combined or used separately).
+    logical :: use_co2_midstate
+    real(kind=rb), allocatable :: rad_1d_co2_mw(:), fd_1d_co2_mw(:), fu_1d_co2_mw(:)
+    real(kind=rb), allocatable :: rad_1d_co2_mb(:), fd_1d_co2_mb(:), fu_1d_co2_mb(:)
+    real(kind=rb), allocatable :: fdl_1d_co2_mw(:), ful_1d_co2_mw(:)
+    real(kind=rb), allocatable :: fdl_1d_co2_mb(:), ful_1d_co2_mb(:)
+    real(kind=rb), allocatable :: fds_1d_co2_mw(:), fus_1d_co2_mw(:)
+    real(kind=rb), allocatable :: fds_1d_co2_mb(:), fus_1d_co2_mb(:)
+    real(kind=rb), allocatable :: lw_1d_co2_mw(:), sw_1d_co2_mw(:)
+    real(kind=rb), allocatable :: lw_1d_co2_mb(:), sw_1d_co2_mb(:)
+
+    ! Q midstate option (RRTMG only). When data_prep/q_midstate.flag exists,
+    ! frc_q is evaluated in midstate atmosphere instead of base:
+    !   frc_q = R(q_warm + T_mid + others_mid) - R(q_base + T_mid + others_mid)
+    ! Cancels ∂²R/∂T∂q cross-term. Mutually exclusive with use_q_feedback.
+    logical :: use_q_midstate
+    real(kind=rb), allocatable :: rad_1d_q_mw(:), fd_1d_q_mw(:), fu_1d_q_mw(:)
+    real(kind=rb), allocatable :: rad_1d_q_mb(:), fd_1d_q_mb(:), fu_1d_q_mb(:)
+    real(kind=rb), allocatable :: fdl_1d_q_mw(:), ful_1d_q_mw(:)
+    real(kind=rb), allocatable :: fdl_1d_q_mb(:), ful_1d_q_mb(:)
+    real(kind=rb), allocatable :: fds_1d_q_mw(:), fus_1d_q_mw(:)
+    real(kind=rb), allocatable :: fds_1d_q_mb(:), fus_1d_q_mb(:)
+    real(kind=rb), allocatable :: lw_1d_q_mw(:), sw_1d_q_mw(:)
+    real(kind=rb), allocatable :: lw_1d_q_mb(:), sw_1d_q_mb(:)
+
+    !-------------------------------- Determine nlev from plev.dat size --------
+    ! plev.dat is nlev × float64 (8 bytes). Inferring nlev from file size lets a
+    ! single binary handle any vertical grid (per-case override via plev.dat).
+    inquire(file='data_prep/plev.dat', size=plev_fsize)
+    if (plev_fsize <= 0) then
+        print *, 'ERROR: data_prep/plev.dat missing or empty'
+        stop 1
+    end if
+    nlev = plev_fsize / 8
+    print *, 'Runtime nlev =', nlev, ' (from plev.dat size =', plev_fsize, 'bytes)'
+
+    !-------------------------------- Allocate all nlev-dependent arrays -------
+    allocate(plev(nlev))
+    allocate(t_base(nlev,nlat,nlon), t_warm(nlev,nlat,nlon))
+    allocate(q_base(nlev,nlat,nlon), q_warm(nlev,nlat,nlon))
+    allocate(o3_base(nlev,nlat,nlon), o3_warm(nlev,nlat,nlon))
+    allocate(cldfrac_base(nlev,nlat,nlon), cldfrac_warm(nlev,nlat,nlon))
+    allocate(cldlwc_base(nlev,nlat,nlon), cldlwc_warm(nlev,nlat,nlon))
+    allocate(cldiwc_base(nlev,nlat,nlon), cldiwc_warm(nlev,nlat,nlon))
+    allocate(tauaer_sw_base(nlev,nlat,nlon,jpband), tauaer_sw_warm(nlev,nlat,nlon,jpband))
+    allocate(ssaaer_sw_base(nlev,nlat,nlon,jpband), ssaaer_sw_warm(nlev,nlat,nlon,jpband))
+    allocate(asmaer_sw_base(nlev,nlat,nlon,jpband), asmaer_sw_warm(nlev,nlat,nlon,jpband))
+    allocate(tauaer_lw_base(nlev,nlat,nlon,nbndlw), tauaer_lw_warm(nlev,nlat,nlon,nbndlw))
+    allocate(tauaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(tauaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(ssaaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(ssaaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(asmaer_sw_base_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(asmaer_sw_warm_spc(nlev,nlat,nlon,jpband,nspecies))
+    allocate(tauaer_lw_base_spc(nlev,nlat,nlon,nbndlw,nspecies))
+    allocate(tauaer_lw_warm_spc(nlev,nlat,nlon,nbndlw,nspecies))
+    allocate(frc_warm_output(ntime,nlev+1,nlat,nlon), frc_co2_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_q_output(ntime,nlev+1,nlat,nlon), frc_ts_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_o3_output(ntime,nlev+1,nlat,nlon), frc_solar_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_albedo_output(ntime,nlev+1,nlat,nlon), frc_cloud_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_aerosol_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_bc_output(ntime,nlev+1,nlat,nlon), frc_ocphi_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_ocpho_output(ntime,nlev+1,nlat,nlon), frc_sulf_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_ss_output(ntime,nlev+1,nlat,nlon), frc_dust_output(ntime,nlev+1,nlat,nlon))
+    allocate(frc_cloud_lw_output(ntime,nlev+1,nlat,nlon), frc_cloud_sw_output(ntime,nlev+1,nlat,nlon))
+    allocate(fds_1d(nlev+1), fus_1d(nlev+1), htr_sw_1d(nlev))
+    allocate(fdl_1d(nlev+1), ful_1d(nlev+1), htr_lw_1d(nlev))
+    allocate(htr_1d(nlev), lw_1d(nlev), sw_1d(nlev))
+    allocate(rad_1d_base(nlev), fd_1d_base(nlev+1), fu_1d_base(nlev+1))
+    allocate(rad_1d_warm(nlev), fd_1d_warm(nlev+1), fu_1d_warm(nlev+1))
+    allocate(rad_1d_t(nlev),    fd_1d_t(nlev+1),    fu_1d_t(nlev+1))
+    allocate(rad_1d_q(nlev),    fd_1d_q(nlev+1),    fu_1d_q(nlev+1))
+    allocate(rad_1d_ts(nlev),   fd_1d_ts(nlev+1),   fu_1d_ts(nlev+1))
+    allocate(rad_1d_o3(nlev),   fd_1d_o3(nlev+1),   fu_1d_o3(nlev+1))
+    allocate(rad_1d_solar(nlev),fd_1d_solar(nlev+1),fu_1d_solar(nlev+1))
+    allocate(rad_1d_albedo(nlev),fd_1d_albedo(nlev+1),fu_1d_albedo(nlev+1))
+    allocate(rad_1d_cloud(nlev), fd_1d_cloud(nlev+1), fu_1d_cloud(nlev+1))
+    allocate(rad_1d_aerosol(nlev),fd_1d_aerosol(nlev+1),fu_1d_aerosol(nlev+1))
+    allocate(rad_1d_co2(nlev),   fd_1d_co2(nlev+1),   fu_1d_co2(nlev+1))
+    allocate(lw_1d_base(nlev),   fdl_1d_base(nlev+1), ful_1d_base(nlev+1))
+    allocate(frc_co2(nlev+1), frc_t(nlev+1), frc_q(nlev+1), frc_albedo(nlev+1))
+    allocate(frc_ts(nlev+1), frc_o3(nlev+1), frc_solar(nlev+1), frc_cloud(nlev+1))
+    allocate(frc_warm(nlev+1), frc_aerosol(nlev+1))
+    allocate(frc_cloud_lw(nlev+1), frc_cloud_sw(nlev+1))
+    allocate(lw_1d_cloud(nlev), sw_1d_cloud(nlev))
+    allocate(fdl_1d_cloud(nlev+1), ful_1d_cloud(nlev+1))
+    allocate(fds_1d_cloud(nlev+1), fus_1d_cloud(nlev+1))
+    allocate(rad_1d_full(nlev), fd_1d_full(nlev+1), fu_1d_full(nlev+1))
+    allocate(lw_1d_full(nlev), sw_1d_full(nlev))
+    allocate(fdl_1d_full(nlev+1), ful_1d_full(nlev+1))
+    allocate(fds_1d_full(nlev+1), fus_1d_full(nlev+1))
+    allocate(frc_full(nlev+1))
+    allocate(frc_full_output(ntime,nlev+1,nlat,nlon))
+    allocate(tauaer_sw_mix(nlev,jpband), ssaaer_sw_mix(nlev,jpband), asmaer_sw_mix(nlev,jpband))
+    allocate(tauaer_lw_mix(nlev,nbndlw))
+    allocate(tau_ssa_base_sw(nlev,jpband), tau_ssa_g_base_sw(nlev,jpband))
+    allocate(tau_ssa_mix(nlev,jpband), tau_ssa_g_mix(nlev,jpband))
+    allocate(rad_1d_spc(nlev), fd_1d_spc(nlev+1), fu_1d_spc(nlev+1))
+    allocate(frc_spc(nlev+1,nspecies))
+    allocate(drdt(nlev+1,nlev+1), drdt_inv(nlev+1,nlev+1))
+
+    ! Midstate-Planck buffers — only really used when use_midstate_planck=.true.,
+    ! but allocate unconditionally so the code paths can share variables.
+    allocate(t_mid(nlev), q_mid(nlev), o3_mid(nlev))
+    allocate(cldfrac_mid(nlev), cldlwc_mid(nlev), cldiwc_mid(nlev))
+    allocate(tauaer_lw_mid(nlev,nbndlw))
+    allocate(tauaer_sw_mid(nlev,jpband), ssaaer_sw_mid(nlev,jpband), asmaer_sw_mid(nlev,jpband))
+    allocate(fdl_1d_mid(nlev+1), ful_1d_mid(nlev+1))
+    allocate(fds_1d_mid(nlev+1), fus_1d_mid(nlev+1))
+    allocate(fd_1d_mid(nlev+1), fu_1d_mid(nlev+1))
+    allocate(rad_1d_mid(nlev), lw_1d_mid(nlev), sw_1d_mid(nlev))
+    allocate(rad_1d_q_ref(nlev), fd_1d_q_ref(nlev+1), fu_1d_q_ref(nlev+1))
+    allocate(rad_1d_co2_mw(nlev), fd_1d_co2_mw(nlev+1), fu_1d_co2_mw(nlev+1))
+    allocate(rad_1d_co2_mb(nlev), fd_1d_co2_mb(nlev+1), fu_1d_co2_mb(nlev+1))
+    allocate(fdl_1d_co2_mw(nlev+1), ful_1d_co2_mw(nlev+1))
+    allocate(fdl_1d_co2_mb(nlev+1), ful_1d_co2_mb(nlev+1))
+    allocate(fds_1d_co2_mw(nlev+1), fus_1d_co2_mw(nlev+1))
+    allocate(fds_1d_co2_mb(nlev+1), fus_1d_co2_mb(nlev+1))
+    allocate(lw_1d_co2_mw(nlev), sw_1d_co2_mw(nlev))
+    allocate(lw_1d_co2_mb(nlev), sw_1d_co2_mb(nlev))
+    allocate(rad_1d_q_mw(nlev), fd_1d_q_mw(nlev+1), fu_1d_q_mw(nlev+1))
+    allocate(rad_1d_q_mb(nlev), fd_1d_q_mb(nlev+1), fu_1d_q_mb(nlev+1))
+    allocate(fdl_1d_q_mw(nlev+1), ful_1d_q_mw(nlev+1))
+    allocate(fdl_1d_q_mb(nlev+1), ful_1d_q_mb(nlev+1))
+    allocate(fds_1d_q_mw(nlev+1), fus_1d_q_mw(nlev+1))
+    allocate(fds_1d_q_mb(nlev+1), fus_1d_q_mb(nlev+1))
+    allocate(lw_1d_q_mw(nlev), sw_1d_q_mw(nlev))
+    allocate(lw_1d_q_mb(nlev), sw_1d_q_mb(nlev))
+
+    ! Detect midstate-Planck mode via flag file. Python writes
+    ! data_prep/drdt_midstate.flag when case.yaml has radiation.drdt_eval=midstate.
+    inquire(file='data_prep/drdt_midstate.flag', exist=use_midstate_planck)
+    inquire(file='data_prep/q_feedback.flag',    exist=use_q_feedback)
+    inquire(file='data_prep/co2_midstate.flag',  exist=use_co2_midstate)
+    inquire(file='data_prep/q_midstate.flag',    exist=use_q_midstate)
+    if (use_midstate_planck) then
+        print *, '  Planck matrix: midstate (2nd-order CFRAM, drdt at (T_base+T_warm)/2)'
+    else
+        print *, '  Planck matrix: base state (1st-order CFRAM, drdt at T_base)'
+    end if
+    if (use_q_feedback) then
+        print *, '  q partial: feedback (Manabe RH-fixed: frc_q computed in T_warm atmosphere)'
+    end if
+    if (use_co2_midstate) then
+        print *, '  CO2 partial: midstate (frc_co2 computed in midstate atmosphere, +2 RT calls/cell)'
+    end if
+    if (use_q_midstate) then
+        print *, '  q partial: midstate (frc_q computed in midstate atmosphere, +2 RT calls/cell)'
+    end if
+    if (use_q_feedback .and. use_q_midstate) then
+        print *, 'ERROR: q_handling cannot be both feedback and midstate'
+        stop 1
+    end if
+
+    !-------------------------------- Read plev values --------
+    open(unit=99, file='data_prep/plev.dat', form='unformatted', access='direct', recl=nlev*8)
+    read(99, rec=1) plev
+    close(99)
+
+!-------------------------------- Read Skip Flags (optional) ----------------------------------
+    ! data_prep/skip_flags.txt may contain lines like "skip_aerosol=1" to suppress
+    ! perturbation calls when the variable is identical between base and warm states.
+    ! Default (file absent or flag not set): run all perturbations.
+    skip_aerosol = .false.
+    block
+        logical :: flag_exists
+        character(len=128) :: line
+        integer :: ios
+        inquire(file='data_prep/skip_flags.txt', exist=flag_exists)
+        if (flag_exists) then
+            open(unit=97, file='data_prep/skip_flags.txt', status='old', action='read')
+            do
+                read(97, '(A)', iostat=ios) line
+                if (ios /= 0) exit
+                if (index(line, 'skip_aerosol=1') > 0) skip_aerosol = .true.
+            end do
+            close(97)
+            print *, "skip_flags loaded: skip_aerosol=", skip_aerosol
+        else
+            print *, "no skip_flags.txt; running all perturbations"
+        end if
+    end block
 
 !-------------------------------- Open Input Files-----------------------------------------------
     open(unit=101,file='data_prep/hus_base.dat',form='unformatted', access='direct',recl=nlev*nlat*nlon*8)
@@ -288,6 +501,9 @@
 !$OMP   lw_1d_base, fdl_1d_base, ful_1d_base, &
 !$OMP   frc_co2, frc_t, frc_q, frc_ts, frc_o3, frc_solar, &
 !$OMP   frc_cloud, frc_albedo, frc_warm, frc_aerosol, &
+!$OMP   rad_1d_full, lw_1d_full, sw_1d_full, &
+!$OMP   fdl_1d_full, ful_1d_full, fds_1d_full, fus_1d_full, &
+!$OMP   fd_1d_full, fu_1d_full, frc_full, &
 !$OMP   drdt, drdt_inv) &
 !$OMP SCHEDULE(dynamic)
        do ilat = 1,nlat
@@ -324,16 +540,57 @@
                    tauaer_lw_warm(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
                    fdl_1d, ful_1d, htr_lw_1d, fd_1d_warm, fu_1d_warm, htr_1d, rad_1d_warm, lw_1d, sw_1d)
 
-               ! Planck Matrix
-               call calc_drdt(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
-                   ts_base(ilat,ilon),  albedo_lw_base(ilat,ilon),&
-                   plev, t_base(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
-                   cldiwc_base(:,ilat,ilon), tauaer_lw_base(:,ilat,ilon,:), lw_1d_base, fdl_1d_base, ful_1d_base, &
-                   drdt(1:nlayer+1,1:nlayer+1))
+               ! Build midstate atmosphere if any midstate option is active
+               ! (used by Planck Jacobian and/or CO2/q partial paths).
+               if (use_midstate_planck .or. use_co2_midstate .or. use_q_midstate) then
+                   t_mid(:)        = 0.5 * (t_base(:,ilat,ilon)       + t_warm(:,ilat,ilon))
+                   q_mid(:)        = 0.5 * (q_base(:,ilat,ilon)       + q_warm(:,ilat,ilon))
+                   o3_mid(:)       = 0.5 * (o3_base(:,ilat,ilon)      + o3_warm(:,ilat,ilon))
+                   cldfrac_mid(:)  = 0.5 * (cldfrac_base(:,ilat,ilon) + cldfrac_warm(:,ilat,ilon))
+                   cldlwc_mid(:)   = 0.5 * (cldlwc_base(:,ilat,ilon)  + cldlwc_warm(:,ilat,ilon))
+                   cldiwc_mid(:)   = 0.5 * (cldiwc_base(:,ilat,ilon)  + cldiwc_warm(:,ilat,ilon))
+                   tauaer_lw_mid(:,:) = 0.5 * (tauaer_lw_base(:,ilat,ilon,:) + tauaer_lw_warm(:,ilat,ilon,:))
+                   tauaer_sw_mid(:,:) = 0.5 * (tauaer_sw_base(:,ilat,ilon,:) + tauaer_sw_warm(:,ilat,ilon,:))
+                   ssaaer_sw_mid(:,:) = 0.5 * (ssaaer_sw_base(:,ilat,ilon,:) + ssaaer_sw_warm(:,ilat,ilon,:))
+                   asmaer_sw_mid(:,:) = 0.5 * (asmaer_sw_base(:,ilat,ilon,:) + asmaer_sw_warm(:,ilat,ilon,:))
+                   ts_mid          = 0.5 * (ts_base(ilat,ilon)         + ts_warm(ilat,ilon))
+                   ps_mid_hPa      = 0.5 * (ps_base(ilat,ilon)         + ps_warm(ilat,ilon)) / 100.0
+                   albedo_lw_mid   = 0.5 * (albedo_lw_base(ilat,ilon)  + albedo_lw_warm(ilat,ilon))
+                   albedo_sw_mid   = 0.5 * (albedo_sw_base(ilat,ilon)  + albedo_sw_warm(ilat,ilon))
+                   zenith_mid      = 0.5 * (zenith_base(ilat,ilon)     + zenith_warm(ilat,ilon))
+                   co2_mid         = 0.5 * (co2ppmv_base               + co2ppmv_warm)
+               end if
+
+               ! Planck Matrix — base state (default, 1st-order CFRAM) OR
+               ! midstate (= (base+warm)/2, 2nd-order Taylor centered at midpoint).
+               if (use_midstate_planck) then
+                   ! Baseline radiation at the midstate (the +1K perturbation pivots around this).
+                   call rad_driver(nlayer, iaer, icld, co2_mid, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_mid, o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_mid, fus_1d_mid, htr_sw_1d,&
+                       fdl_1d_mid, ful_1d_mid, htr_lw_1d, fd_1d_mid, fu_1d_mid, htr_1d,&
+                       rad_1d_mid, lw_1d_mid, sw_1d_mid)
+
+                   ! Planck Jacobian at midstate.
+                   call calc_drdt(nlayer, iaer, icld, co2_mid, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, albedo_lw_mid,&
+                       plev, t_mid, q_mid, o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_lw_mid, lw_1d_mid, fdl_1d_mid, ful_1d_mid, &
+                       drdt(1:nlayer+1,1:nlayer+1))
+               else
+                   ! Default: 1st-order CFRAM, Planck at base state.
+                   call calc_drdt(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
+                       ts_base(ilat,ilon),  albedo_lw_base(ilat,ilon),&
+                       plev, t_base(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
+                       cldiwc_base(:,ilat,ilon), tauaer_lw_base(:,ilat,ilon,:), lw_1d_base, fdl_1d_base, ful_1d_base, &
+                       drdt(1:nlayer+1,1:nlayer+1))
+               end if
 
                   drdt_inv(1:nlayer+1,1:nlayer+1) = inv(drdt(1:nlayer+1,1:nlayer+1))
 
-               ! CO2
+               ! CO2 — default base-path partial: R(co2_warm in T_base atm)
                call rad_driver(nlayer, iaer, icld, co2ppmv_warm, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
                    ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
                    plev, t_base(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
@@ -341,13 +598,81 @@
                    tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
                    fdl_1d, ful_1d, htr_lw_1d, fd_1d_co2, fu_1d_co2, htr_1d, rad_1d_co2, lw_1d, sw_1d)
 
-               ! Q
-             call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
-                   ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
-                   plev, t_base(:,ilat,ilon), q_warm(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
-                   cldiwc_base(:,ilat,ilon), tauaer_sw_base(:,ilat,ilon,:), ssaaer_sw_base(:,ilat,ilon,:), asmaer_sw_base(:,ilat,ilon,:),&
-                   tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
-                   fdl_1d, ful_1d, htr_lw_1d, fd_1d_q, fu_1d_q, htr_1d, rad_1d_q, lw_1d, sw_1d)
+               ! CO2 midstate path (use_co2_midstate=true): evaluate frc_co2 in
+               ! midstate atmosphere instead of base, cancelling ∂²R/∂T∂C.
+               ! Costs +2 rad_driver calls per cell.
+               if (use_co2_midstate) then
+                   ! co2_warm in midstate atmosphere
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_warm, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_mid, o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_co2_mw, fus_1d_co2_mw, htr_sw_1d,&
+                       fdl_1d_co2_mw, ful_1d_co2_mw, htr_lw_1d, fd_1d_co2_mw, fu_1d_co2_mw, htr_1d,&
+                       rad_1d_co2_mw, lw_1d_co2_mw, sw_1d_co2_mw)
+                   ! co2_base in midstate atmosphere
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_mid, o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_co2_mb, fus_1d_co2_mb, htr_sw_1d,&
+                       fdl_1d_co2_mb, ful_1d_co2_mb, htr_lw_1d, fd_1d_co2_mb, fu_1d_co2_mb, htr_1d,&
+                       rad_1d_co2_mb, lw_1d_co2_mb, sw_1d_co2_mb)
+               end if
+
+               ! Q — water vapour partial.
+               ! q_handling=independent (default): q_warm in T_base atmosphere
+               !   (standard CFRAM). frc_q subtracts rad_1d_base.
+               ! q_handling=feedback: q_warm in T_warm atmosphere, with an extra
+               !   reference call R(q_base + T_warm + others_base). One-sided
+               !   warm path; cross-term sign FLIPPED vs base path (not cancelled).
+               ! q_handling=midstate: q_warm in midstate atmosphere, with a
+               !   midstate q_base reference. Symmetric path → ∂²R/∂T∂q cancelled.
+               if (use_q_midstate) then
+                   ! q_warm in midstate atmosphere
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_warm(:,ilat,ilon), o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_q_mw, fus_1d_q_mw, htr_sw_1d,&
+                       fdl_1d_q_mw, ful_1d_q_mw, htr_lw_1d, fd_1d_q_mw, fu_1d_q_mw, htr_1d,&
+                       rad_1d_q_mw, lw_1d_q_mw, sw_1d_q_mw)
+                   ! q_base in midstate atmosphere
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_mid_hPa,&
+                       ts_mid, zenith_mid, albedo_sw_mid, albedo_lw_mid,&
+                       plev, t_mid, q_base(:,ilat,ilon), o3_mid, cldfrac_mid, cldlwc_mid,&
+                       cldiwc_mid, tauaer_sw_mid, ssaaer_sw_mid, asmaer_sw_mid,&
+                       tauaer_lw_mid, fds_1d_q_mb, fus_1d_q_mb, htr_sw_1d,&
+                       fdl_1d_q_mb, ful_1d_q_mb, htr_lw_1d, fd_1d_q_mb, fu_1d_q_mb, htr_1d,&
+                       rad_1d_q_mb, lw_1d_q_mb, sw_1d_q_mb)
+                   ! Reuse rad_1d_q / fd_1d_q / fu_1d_q arrays for downstream forcing computation
+                   rad_1d_q  = rad_1d_q_mw
+                   fd_1d_q   = fd_1d_q_mw
+                   fu_1d_q   = fu_1d_q_mw
+               else if (use_q_feedback) then
+                   ! Perturbed: q_warm + T_warm + others_base
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
+                       ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
+                       plev, t_warm(:,ilat,ilon), q_warm(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
+                       cldiwc_base(:,ilat,ilon), tauaer_sw_base(:,ilat,ilon,:), ssaaer_sw_base(:,ilat,ilon,:), asmaer_sw_base(:,ilat,ilon,:),&
+                       tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
+                       fdl_1d, ful_1d, htr_lw_1d, fd_1d_q, fu_1d_q, htr_1d, rad_1d_q, lw_1d, sw_1d)
+                   ! Reference: q_base + T_warm + others_base (extra rad_driver call)
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
+                       ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
+                       plev, t_warm(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
+                       cldiwc_base(:,ilat,ilon), tauaer_sw_base(:,ilat,ilon,:), ssaaer_sw_base(:,ilat,ilon,:), asmaer_sw_base(:,ilat,ilon,:),&
+                       tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
+                       fdl_1d, ful_1d, htr_lw_1d, fd_1d_q_ref, fu_1d_q_ref, htr_1d, rad_1d_q_ref, lw_1d, sw_1d)
+               else
+                   ! Standard CFRAM: q_warm in T_base atmosphere; reference = base
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
+                       ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
+                       plev, t_base(:,ilat,ilon), q_warm(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
+                       cldiwc_base(:,ilat,ilon), tauaer_sw_base(:,ilat,ilon,:), ssaaer_sw_base(:,ilat,ilon,:), asmaer_sw_base(:,ilat,ilon,:),&
+                       tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
+                       fdl_1d, ful_1d, htr_lw_1d, fd_1d_q, fu_1d_q, htr_1d, rad_1d_q, lw_1d, sw_1d)
+               end if
 
                ! ts
              call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
@@ -399,15 +724,27 @@
                fds_1d_cloud = fds_1d
                fus_1d_cloud = fus_1d
 
-              ! Aerosol
+              ! Aerosol — skipped if global skip_aerosol flag set (saves 1 + nspecies rad_driver calls per column)
+              if (.not. skip_aerosol) then
                call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
                    ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
                    plev, t_base(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
                    cldiwc_base(:,ilat,ilon), tauaer_sw_warm(:,ilat,ilon,:), ssaaer_sw_warm(:,ilat,ilon,:), asmaer_sw_warm(:,ilat,ilon,:),&
                    tauaer_lw_warm(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
                    fdl_1d, ful_1d, htr_lw_1d, fd_1d_aerosol, fu_1d_aerosol, htr_1d, rad_1d_aerosol, lw_1d, sw_1d)
+              else
+                  ! Identical to base (no perturbation): copy base diagnostics so frc_aerosol = 0
+                  rad_1d_aerosol = rad_1d_base
+                  fd_1d_aerosol  = fd_1d_base
+                  fu_1d_aerosol  = fu_1d_base
+              end if
 
-               ! Per-species aerosol perturbation (Phase 3).
+               ! Per-species aerosol perturbation (Phase 3) — same skip guard.
+               if (skip_aerosol) then
+                   frc_spc = 0.0
+                   ! fall through to forcing computation; per-species frcs are zero
+                   goto 7777
+               end if
                ! For each species isp, build a mixed optical state where only isp is
                ! at warm, all others stay at base. Use AOD-weighted combination:
                !   tau_mix      = tau_bulk_base - tau_base_spc(isp) + tau_warm_spc(isp)
@@ -452,14 +789,48 @@
                    frc_spc(nlayer+1, isp) = fd_1d_spc(nlayer+1) - fu_1d_spc(nlayer+1) &
                        - (fd_1d_base(nlayer+1) - fu_1d_base(nlayer+1))
                end do
+7777           continue   ! per-species skip target
+
+               ! ============== Lu/Cai full-state perturbation ==============
+               ! All variables at perturbed values INCLUDING T_warm, ts_warm.
+               ! Used to compute ΔQ_dyn = (rad_1d_full - rad_1d_base) for closure.
+               ! Aerosol always uses warm optics here (aerosol skip only affects the
+               ! standalone aerosol partial; the bulk warm state is part of the full).
+               call rad_driver(nlayer, iaer, icld, co2ppmv_warm, ch4ppmv, n2oppmv, ps_warm(ilat,ilon)/100.0,&
+                   ts_warm(ilat,ilon), zenith_warm(ilat,ilon), albedo_sw_warm(ilat,ilon), albedo_lw_warm(ilat,ilon),&
+                   plev, t_warm(:,ilat,ilon), q_warm(:,ilat,ilon), o3_warm(:,ilat,ilon), cldfrac_warm(:,ilat,ilon), cldlwc_warm(:,ilat,ilon),&
+                   cldiwc_warm(:,ilat,ilon), tauaer_sw_warm(:,ilat,ilon,:), ssaaer_sw_warm(:,ilat,ilon,:), asmaer_sw_warm(:,ilat,ilon,:),&
+                   tauaer_lw_warm(:,ilat,ilon,:), fds_1d_full, fus_1d_full, htr_sw_1d,&
+                   fdl_1d_full, ful_1d_full, htr_lw_1d, fd_1d_full, fu_1d_full, htr_1d, rad_1d_full, lw_1d_full, sw_1d_full)
 
                ! Compute forcing (W/m2)
                frc_warm(1:nlayer)    = rad_1d_warm(1:nlayer) - rad_1d_base(1:nlayer)
                frc_warm(nlayer+1)    = fd_1d_warm(nlayer+1)-fu_1d_warm(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
-               frc_co2(1:nlayer)     = rad_1d_co2(1:nlayer) - rad_1d_base(1:nlayer)
-               frc_co2(nlayer+1)     = fd_1d_co2(nlayer+1)-fu_1d_co2(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
-               frc_q(1:nlayer)       = rad_1d_q(1:nlayer) - rad_1d_base(1:nlayer)
-               frc_q(nlayer+1)       = fd_1d_q(nlayer+1)-fu_1d_q(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
+               ! frc_co2: default base-path (R(co2_warm,T_base) - R(base)) OR
+               !          midstate-path (R(co2_warm,T_mid) - R(co2_base,T_mid)),
+               !          cancelling the ∂²R/∂T∂C cross-term.
+               if (use_co2_midstate) then
+                   frc_co2(1:nlayer) = rad_1d_co2_mw(1:nlayer) - rad_1d_co2_mb(1:nlayer)
+                   frc_co2(nlayer+1) = (fd_1d_co2_mw(nlayer+1)-fu_1d_co2_mw(nlayer+1)) &
+                                     - (fd_1d_co2_mb(nlayer+1)-fu_1d_co2_mb(nlayer+1))
+               else
+                   frc_co2(1:nlayer) = rad_1d_co2(1:nlayer) - rad_1d_base(1:nlayer)
+                   frc_co2(nlayer+1) = fd_1d_co2(nlayer+1)-fu_1d_co2(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
+               end if
+               ! frc_q: independent subtracts rad_base; feedback subtracts the
+               ! warm-T q-base reference; midstate subtracts the midstate q-base
+               ! reference (both q legs computed in midstate atmosphere).
+               if (use_q_midstate) then
+                   frc_q(1:nlayer) = rad_1d_q_mw(1:nlayer) - rad_1d_q_mb(1:nlayer)
+                   frc_q(nlayer+1) = (fd_1d_q_mw(nlayer+1)-fu_1d_q_mw(nlayer+1)) &
+                                   - (fd_1d_q_mb(nlayer+1)-fu_1d_q_mb(nlayer+1))
+               else if (use_q_feedback) then
+                   frc_q(1:nlayer) = rad_1d_q(1:nlayer) - rad_1d_q_ref(1:nlayer)
+                   frc_q(nlayer+1) = fd_1d_q(nlayer+1)-fu_1d_q(nlayer+1)-(fd_1d_q_ref(nlayer+1)-fu_1d_q_ref(nlayer+1))
+               else
+                   frc_q(1:nlayer) = rad_1d_q(1:nlayer) - rad_1d_base(1:nlayer)
+                   frc_q(nlayer+1) = fd_1d_q(nlayer+1)-fu_1d_q(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
+               end if
                frc_ts(1:nlayer)      = rad_1d_ts(1:nlayer) - rad_1d_base(1:nlayer)
                frc_ts(nlayer+1)      = fd_1d_ts(nlayer+1)-fu_1d_ts(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
                frc_o3(1:nlayer)      = rad_1d_o3(1:nlayer) - rad_1d_base(1:nlayer)
@@ -485,6 +856,12 @@
                frc_aerosol(1:nlayer) = rad_1d_aerosol(1:nlayer) - rad_1d_base(1:nlayer)
                frc_aerosol(nlayer+1) = fd_1d_aerosol(nlayer+1)-fu_1d_aerosol(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
 
+               ! Lu/Cai full-state forcing: rad_1d_full uses T_warm + all-perturbed.
+               ! Python computes  dT_dry = -drdt_inv @ (-frc_full) = drdt_inv @ frc_full
+               ! which captures ΔQ_dyn from full-state energy balance (Lu/Cai Eq.4).
+               frc_full(1:nlayer) = rad_1d_full(1:nlayer) - rad_1d_base(1:nlayer)
+               frc_full(nlayer+1) = fd_1d_full(nlayer+1)-fu_1d_full(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
+
                ! Store forcing output
                do ilayer = 1, nlayer
                   frc_warm_output(itime,ilayer,ilat,ilon) = frc_warm(ilayer)
@@ -498,6 +875,7 @@
                   frc_cloud_lw_output(itime,ilayer,ilat,ilon) = frc_cloud_lw(ilayer)
                   frc_cloud_sw_output(itime,ilayer,ilat,ilon) = frc_cloud_sw(ilayer)
                   frc_aerosol_output(itime,ilayer,ilat,ilon) = frc_aerosol(ilayer)
+                  frc_full_output(itime,ilayer,ilat,ilon)    = frc_full(ilayer)
                   frc_bc_output(itime,ilayer,ilat,ilon)    = frc_spc(ilayer,1)
                   frc_ocphi_output(itime,ilayer,ilat,ilon) = frc_spc(ilayer,2)
                   frc_ocpho_output(itime,ilayer,ilat,ilon) = frc_spc(ilayer,3)
@@ -518,6 +896,7 @@
                   frc_cloud_lw_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
                   frc_cloud_sw_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
                   frc_aerosol_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
+                  frc_full_output(itime,nlayer+1:nlev,ilat,ilon)    = -999.0
                   frc_bc_output(itime,nlayer+1:nlev,ilat,ilon)    = -999.0
                   frc_ocphi_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
                   frc_ocpho_output(itime,nlayer+1:nlev,ilat,ilon) = -999.0
@@ -538,6 +917,7 @@
                frc_cloud_lw_output(itime,nlev+1,ilat,ilon) = frc_cloud_lw(nlayer+1)
                frc_cloud_sw_output(itime,nlev+1,ilat,ilon) = frc_cloud_sw(nlayer+1)
                frc_aerosol_output(itime,nlev+1,ilat,ilon) = frc_aerosol(nlayer+1)
+               frc_full_output(itime,nlev+1,ilat,ilon)    = frc_full(nlayer+1)
                frc_bc_output(itime,nlev+1,ilat,ilon)    = frc_spc(nlayer+1,1)
                frc_ocphi_output(itime,nlev+1,ilat,ilon) = frc_spc(nlayer+1,2)
                frc_ocpho_output(itime,nlev+1,ilat,ilon) = frc_spc(nlayer+1,3)
@@ -568,6 +948,7 @@
     call write_out_3d(frc_cloud_sw_output,"frc_cloud_sw.dat",     ntime,nlev,nlat,nlon)
     call write_out_3d(frc_aerosol_output,"frc_aerosol.dat ",      ntime,nlev,nlat,nlon)
     call write_out_3d(frc_warm_output,   "frc_warm.dat    ",      ntime,nlev,nlat,nlon)
+    call write_out_3d(frc_full_output,   "frc_full.dat    ",      ntime,nlev,nlat,nlon)
     call write_out_3d(frc_solar_output,  "frc_solar.dat   ",      ntime,nlev,nlat,nlon)
     ! Per-species aerosol forcing (Phase 3)
     call write_out_3d(frc_bc_output,     "frc_bc.dat      ",      ntime,nlev,nlat,nlon)

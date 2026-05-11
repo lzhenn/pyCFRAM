@@ -42,12 +42,15 @@ CFRAM 的核心思想是将观测到的温度变化 ΔT 分解为各物理过程
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Fortran RRTMG（辐射引擎，cfram_rrtmg_1col）            │
+│ Fortran 辐射引擎 (RRTMG 或 Fu, 由 case.yaml.scheme 选)  │
 │                                                         │
 │  输入：单柱大气廓线 + 地表状态（base 和 perturbed）     │
-│  计算：11 次 RRTMG 辐射传输调用                         │
-│        + ~37 次 Planck 矩阵构建（逐层 +1K 扰动）       │
-│  输出：9 项辐射 forcing (W/m²) + Planck 逆矩阵          │
+│  计算：~11 次 rad_driver 辐射传输调用                   │
+│        + nlayer+1 次 Planck 矩阵构建（逐层 ±0.5K 扰动） │
+│        + 6 次 per-species 气溶胶扰动 (RRTMG only)       │
+│        + Fu only: dual-MC sub-column overlap (base/warm)│
+│  输出：9 项 bulk forcing + cloud_lw/sw 拆分 +           │
+│        6 物种 forcing + Planck 逆矩阵                   │
 └──────────────────────┬──────────────────────────────────┘
                        │ (临时二进制文件)
 ┌──────────────────────▼──────────────────────────────────┐
@@ -96,22 +99,19 @@ pyCFRAM/
 │   │   └── figures/         # 出图结果
 │   └── eh22/
 ├── core/                    # Python 核心模块
-│   ├── config.py            # 统一配置加载器
+│   ├── config.py            # 统一配置加载器（含 get_drdt_eval/probe/get_co2_handling/get_q_handling）
 │   ├── constants.py         # 物理常量 + RRTMG 固有参数
-│   ├── radiation.py         # 辐射预处理（坐标变换、柱密度）
-│   ├── aerosol_optics.py    # 气溶胶光学属性（混合比 → AOD/SSA/g）
-│   ├── planck_matrix.py     # Planck 矩阵构建与求解
-│   ├── decomposition.py     # CFRAM 分解流程编排
-│   ├── cfram_runner.py      # Fortran 子进程调用封装
-│   └── fortran_io.py        # Fortran 直接访问文件读写
-├── fortran/                 # Fortran RRTMG 辐射引擎
-│   ├── cfram_rrtmg.f90      # 主程序（只输出 forcing + Planck 矩阵）
+│   └── aerosol_optics.py    # 气溶胶光学属性（混合比 → AOD/SSA/g）
+├── fortran/                 # Fortran 辐射引擎（RRTMG + Fu，由 case.yaml 选择）
+│   ├── cfram_rrtmg.f90      # RRTMG 单柱主程序（make sed 出 cfram_rrtmg_1col.f90）
+│   ├── cfram_fu_1col.f90    # Fu 单柱主程序（dual-MC sub-column 重叠）
+│   ├── Fu/                  # Fu 源码（cas_fu_radiation.f, fu_helpers.f, para.file）
 │   ├── rad_driver.f90       # RRTMG 调用驱动
-│   ├── rad_driver_lw.f90    # LW Planck 矩阵构建
-│   ├── drdt.f90             # ∂R/∂T 计算
-│   ├── math.f90             # 矩阵求逆
+│   ├── rad_driver_lw.f90    # LW 通量计算（calc_drdt 用）
+│   ├── drdt.f90             # Planck 矩阵 ∂R/∂T（含 centered FD ±0.5K 分支）
+│   ├── math.f90             # 矩阵求逆（LAPACK DGETRF/DGETRS）
 │   ├── writeout.f90         # 输出工具
-│   ├── makefile             # 编译（同时生成 cfram_rrtmg 和 cfram_rrtmg_1col）
+│   ├── makefile             # 双 toolchain：intel (ifort+MKL) / gnu (gfortran+conda LAPACK)
 │   ├── data_prep/aerosol/   # GOCART 气溶胶查找表（opticsBands_*.nc）
 │   ├── RRTMG_LW-master/     # 上游 RRTMG 长波库（含 rrtmg_lw.nc）
 │   └── RRTMG_SW-master/     # 上游 RRTMG 短波库（含 rrtmg_sw.nc）
@@ -190,15 +190,44 @@ machine urs.earthdata.nasa.gov login <USERNAME> password <PASSWORD>
 
 ```bash
 cd fortran
-make          # 同时生成 cfram_rrtmg 和 cfram_rrtmg_1col
+make                       # 默认 RRTMG: cfram_rrtmg_1col
+make fu                    # Fu 引擎: cfram_fu_1col（runtime nlev）
+make TOOLCHAIN=intel       # ifort + MKL（hqlx220/204 生产环境，默认）
+make TOOLCHAIN=gnu         # Mac 本地 gfortran + conda LAPACK
 cd ..
 ```
 
-生成两个可执行文件：
-- `cfram_rrtmg`：全场版（nlat=81, nlon=121），用于调试 / 独立运行
-- `cfram_rrtmg_1col`：单柱版（nlat=1, nlon=1），用于 Python multiprocessing 并行调用
+可执行文件（两者均通过 `data_prep/plev.dat` 文件大小推导运行时 nlev，单一 binary 处理任意垂直网格 17/19/30/37/…）：
+- `cfram_rrtmg_1col`：RRTMG 单柱版
+- `cfram_fu_1col`：Fu 单柱版
+- `cfram_fu_1col_sp`：Fu 单精度调试版（与 OLD CFRAM 默认 ifort 行为对齐，validation 用）
 
-若需 ifort 编译，改用 `makefile.ifort`。
+每个 case 的 `case.yaml` 通过 `radiation.scheme` 字段选择引擎（推荐）：
+
+```yaml
+radiation:
+  scheme: rrtmg      # 或 fu；将来扩展见 core/config.py:RADIATION_SCHEMES
+```
+
+`run.executable: <binary>` 仍作为 legacy 直传名 binary 的逃生口保留。
+
+**Fu 引擎 dual MC sub-column overlap**（2026-05-10 修复）：
+Fu 引擎需要两套 Monte Carlo 子列云重叠模式，分别从 `cc_base` 和
+`cc_warm` 抽样：
+
+- `base_no_cloud` —— 由 `cc_base` 抽样，用于 case 0/2/3/4/5/6/7 + drdt
+- `warm_no_cloud` —— 由 `cc_warm` 抽样，用于 case 1/8/9（warm/cloud/full）
+
+apple-to-apple 对齐 OLD CFRAM 源码（GW-base.f 写 base_no_cloud_out，
+GW-warm.f 写 warm_no_cloud_out，GW-cloud.f 读 warm 版）。如果两个状态
+共用一份 pattern（pyCFRAM 2026-05-10 之前的行为），warm 云态下 RT 看到
+的 sub-col cloud fraction 与实际加载的 cc_warm 错配，会出现 +1.8 K 的
+CLDL/CLDS 全场镜像翻转 bug。修复后单柱所有 13 个 dT 项与 collab
+`partial_T_1.grd` 偏差 ≤ 0.003 K（详见 `session_log.md` 2026-05-10 条目）。
+
+可选地把 OLD CFRAM 的精确 MC 输出（`base/warm_no_cloud_out_1.dat`）拷贝到
+`data_prep/{base,warm}_no_cloud_seed.dat`，Fu binary 会读取这两份文件做
+bit-perfect 单柱复现。
 
 ---
 
@@ -573,18 +602,18 @@ mixing_ratio × air_density × layer_thickness × mass_extinction_coeff → AOD 
 已完成项（移出本节）：
 - ✅ 气溶胶 15-bin → 6 种独立物种映射（已经是每物种独立光学属性 + RRTMG `iaer=10`）
 - ✅ ERA5+MERRA-2 自动预处理（`build_case_input.py` + `case.yaml` 驱动）
+- ✅ 支持任意气压层数（runtime 从 `data_prep/plev.dat` 大小推导 nlev，单一 binary 处理任意网格）
+- ✅ CMIP6 接口（`scripts/build_cesm2_official.py` + `cases/cesm2_4xco2*` 系列；hybrid σ → plev 重网格 + Phase A 1850 climatology O3 注入）
+- ✅ 单柱 climlab 验证框架（见 §14）+ 高阶 CFRAM 选项（midstate Planck、centered FD、co2_handling=midstate）
+- ✅ Fu 引擎接入 + dual-MC sub-column 重叠 bug 修复（apple-to-apple 对齐 OLD CFRAM）
 
 待办：
 
 1. **路径 B 备用模块**（低优先级）：实现离线气溶胶 forcing 预计算 + Planck 求逆，与 Wu et al. 一比一数值对齐，供对照实验用
-2. **CO2 空间变化**：当前用常数（paper_data 反推），升级为 MERRA-2 M2I3NVCHM 或 CAMS CO2 3D 场
-3. **O3 数据源统一**：目前用 ERA5 o3，可切换为 MERRA-2 O3（减少数据源异质性）
-4. **atmdyn / sfcdyn 残差项**：从 ERA5/MERRA-2 能量收支残差计算，扩写 `nonrad_forcing.nc`
-5. **f2py 封装 RRTMG**：避免临时文件 I/O，预计单格点速度提升 2-3 倍
-6. **支持不同气压层数**：通过 Fortran namelist 运行时指定（当前固定 37 层）
-7. **CMIP6 / DAMIP 接口**：新增 `CMIP6Source` 继承 `DataSource`
-8. **Fig.4 PAP 柱状图独立版**：尚未基于 v3 结果重制
-9. **敏感性实验框架**：单点柱 ablation（关闭 cloud / aerosol / WV 各一项）
+2. **CO2 / O3 空间变化**：当前 CO2 用常数（paper_data 反推），O3 用 ERA5；升级为 MERRA-2 M2I3NVCHM CO2 或 CAMS 3D 场，O3 切到 MERRA-2 减少数据源异质性
+3. **f2py 封装 RRTMG**：避免临时文件 I/O，预计单格点速度提升 2-3 倍
+4. **2 阶 CFRAM**：单柱验证（§14）显示 1 阶 CFRAM 在 RCE 上有 ~0.2 K mid-trop floor，源于对流调整 mass redistribution + R_TTT + CC 二阶；要进一步逼近真值需显式 Hessian
+5. **敏感性实验框架**：单柱 ablation（关闭 cloud / aerosol / WV 各一项）
 
 ---
 
@@ -696,3 +725,63 @@ module load blas
 也可在 `fortran/makefile` 中将 LAPACK 改为静态链接（`-l:liblapack.a -l:libblas.a`），一次编译后无需每次加载模块。
 
 **注意**：`§4.1` 环境要求表中"LAPACK/BLAS 系统自带即可"的说法适用于普通 Linux 桌面，在 HPC 集群上须显式加载模块。
+
+---
+
+## 14. 单柱 climlab 验证方法
+
+### 14.1 动机
+
+实地观测/再分析数据驱动的 CFRAM 分解（EH13/EH22、CESM2 4×CO2）受多种误差源混合：观测不确定性、气溶胶光学近似、Manabe 假设、对流参数化等。当 closure (`dT_obs = Σ dT_X + dT_dry`) 残差大时,难以独立判断错误来自数据还是 CFRAM 方法本身。
+
+`cases/climlab_4xco2` 提供一个**完全可控的理想验证**：用 climlab 软件包跑两个 clear-sky RCE 平衡态(1×CO2 vs 4×CO2 Manabe RH-fixed),把这两个平衡作为 base/warm 喂给 pyCFRAM。这是一个 1×1 单柱、纯辐射 + 干对流调整的简化系统,没有云、气溶胶、动力,因此 CFRAM 的闭合性、Planck 矩阵正确性、forcing 路径选择都暴露得很清楚。
+
+- ΔTs ≈ +4.59 K (climlab 收敛态)
+- 30-level 默认 σ-grid (climlab),pyCFRAM runtime nlev 自适应,无需重编 Fortran
+- 单柱 RRTMG 跑时 ~1.5 s,Fu ~2 s
+
+### 14.2 执行
+
+```bash
+# 1. 跑 climlab 双态 RCE,写入 cases/climlab_4xco2/input/ 和 cases/climlab_4xco2_fu/input/
+/path/to/conda/python experiments/climlab_validation/run_rce_4xco2.py
+
+# 2. CFRAM 分解 (1×1 自动识别,无 mp.Pool 启动开销)
+python3 run_case.py climlab_4xco2     --step run     # RRTMG
+python3 run_case.py climlab_4xco2_fu  --step run     # Fu
+
+# 3. 4-panel 垂直 profile (Σ closure + co2 + q + dry)
+python3 scripts/plot_singlecol_profile.py climlab_4xco2                    # RRTMG only
+python3 scripts/plot_singlecol_profile.py climlab_4xco2 climlab_4xco2_fu   # 双引擎 overlay
+```
+
+### 14.3 高阶 CFRAM 选项 (仅适用于 RCE clear-sky 单柱)
+
+1 阶 CFRAM 在 clear-sky 单柱中线性化误差成为主要误差源。pyCFRAM 提供 4 个 opt-in `radiation:` flag 逐步消除 Taylor 展开中的特定项。**所有 flag 默认关闭**,且**绝不应在 ERA5/CESM2 真实大气 case 上启用** —— 它们假设辐射近平衡、无非辐射耦合。
+
+| Flag | 默认 | 作用 |
+|------|------|------|
+| `drdt_eval: midstate` | `base` | Planck 矩阵在 (T_base+T_warm)/2 算,cancel 单变量 R_TT 项 (1-变量 2 阶 Taylor)。+1 rad_driver/cell |
+| `drdt_probe: centered` | `onesided` | calc_drdt 用 T_j ± 0.5K centered FD 替代 +1K 单边,cancel J 矩阵构造内部的 R_TT 污染。calc_drdt 内 rad_driver_lw 翻倍 |
+| `co2_handling: midstate` | `base` | `frc_co2 = R(T_mid, q_mid, co2_warm) − R(T_mid, q_mid, co2_base)` 在 mid-state 大气算,cancel ∂²R/∂T∂C cross-term。+2 rad_driver/cell |
+| `q_handling: midstate` / `feedback` | `independent` | 仅诊断用。`midstate` 在 Manabe RH-fixed RCE 上让 upper-trop 闭合**变差 3×** —— baseline 的 R_Tq cross-term 恰好与约束 RH 解对齐,cancel 反而丢失"正确"贡献。`feedback` 翻转 R_Tq 符号(单边 warm 路径) |
+
+数学背景:midstate 对称差展开只消单变量偶次项 (R_TT、R_qq、R_CC),混合 cross-term (R_TC、R_Tq) 仍存活。Cancel mixed term 需要把对应的 `frc_X` **和** baseline 都搬到 midstate (即 `co2_handling: midstate`)。详见 `temp.md`。
+
+### 14.4 已验证闭合性
+
+`climlab_4xco2` 上 `dT_obs − (dT_co2 + dT_q + dT_ts + dT_dry)` 按高度带 RMS:
+
+| 配置 | mid-trop (450–650 hPa) | upper-trop (200–400 hPa) | strato (<200 hPa) |
+|------|:----------------------:|:------------------------:|:-----------------:|
+| baseline 1 阶 | 0.45 K | 0.07 K | 0.30 K |
+| + `drdt_eval: midstate` | 0.45 K | 0.07 K | **0.28 K** (stratosphere 闭合) |
+| + `co2_handling: midstate` | **0.24 K (-47%)** | 0.04 K | 0.28 K |
+| + `drdt_probe: centered` | **0.21 K (-55%)** | **0.02 K (-68%)** | **0.25 K** |
+
+剩余 ~0.2 K mid-trop 残差是 1 阶 CFRAM 在该 setup 上的**物理 floor**:climlab 干对流调整的 mass redistribution(非辐射、本质上在 J⁻¹·ΔR 框架之外)、R_TTT 高阶 T 项、Clausius–Clapeyron Δq 二阶项。要继续下降需 2 阶 CFRAM 显式 Hessian —— 算法结构需重新设计,工程量较大。
+
+### 14.5 引擎交叉验证 (RRTMG vs Fu)
+
+两个引擎用相同的 climlab 输入跑出来,`dT_co2` / `dT_q` 个体量级差 10–15 %(不同 RT solver),但总 ECS-equivalent 响应在数值噪声内一致。这是独立于 OLD CFRAM 参考的有用 cross-check —— 任一引擎单独的 bug 都不会同时影响另一个。
+

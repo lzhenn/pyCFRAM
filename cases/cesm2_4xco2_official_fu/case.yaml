@@ -1,0 +1,33 @@
+# CESM2 4×CO2 — Fu radiation on CMIP6 official 19-plev input (apple-to-apple
+# with OLD CFRAM raw/CFRAM.zip GW-*.f). Reuses cesm2_4xco2_official inputs
+# (built from CMIP6 monthly raw via build_cesm2_official.py) which include
+# 2m huss (CMIP6 standard). Tests two candidate causes simultaneously:
+#   1) vertical resolution 19 plev (vs collaborator's 37 plev in cesm2_4xco2_fu)
+#   2) 2m huss for ph(nv1) (vs ph(nv) HOLD fallback)
+case_name: CESM2_4xCO2_official_fu
+description: "CESM2 4xCO2, Fu radiation, CMIP6 19-plev + huss (apple-to-apple OLD CFRAM)"
+
+# Symlink-via-relative-path to reuse cesm2_4xco2_official inputs
+input:
+  base_pres:      ../cesm2_4xco2_official/input/base_pres.nc
+  base_surf:      ../cesm2_4xco2_official/input/base_surf.nc
+  perturbed_pres: ../cesm2_4xco2_official/input/perturbed_pres.nc
+  perturbed_surf: ../cesm2_4xco2_official/input/perturbed_surf.nc
+  nonrad_forcing: ../cesm2_4xco2_official/input/nonrad_forcing.nc
+
+# Per-case 19-level plev (TOA→surface in pyCFRAM internal convention).
+# Matches CMIP6 plev: [1000, 925, 850, 700, ..., 5, 1] hPa reversed.
+grid:
+  pressure_levels: [1, 5, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300,
+                    400, 500, 600, 700, 850, 925, 1000]
+
+radiation:
+  scheme: fu                  # Fu radiation engine (cfram_fu_1col)
+
+run:
+  nproc: auto
+
+plot:
+  key_region:
+    lon: [0, 360]
+    lat: [-90, 90]
