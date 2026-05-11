@@ -18,7 +18,7 @@ from netCDF4 import Dataset
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.config import load_case, defaults, get_plev, get_aerosol_map, get_nproc, \
     get_fortran_dir, get_lookup_dir, get_executable, get_output_terms, \
-    get_drdt_eval, PROJECT_ROOT
+    get_drdt_eval, get_q_handling, PROJECT_ROOT
 from core.constants import NBND_LW, NBND_SW
 
 # Default plev / nlev (used until main() overrides with case-specific values).
@@ -266,6 +266,10 @@ def process_column(args):
     # existence of this file; Fu currently ignores it.
     if d.get('drdt_eval') == 'midstate':
         open(os.path.join(dp, 'drdt_midstate.flag'), 'w').close()
+    # Optional Manabe q-feedback: compute frc_q at warm-T atmosphere,
+    # adding 1 rad_driver call for the warm-T q-base reference.
+    if d.get('q_handling') == 'feedback':
+        open(os.path.join(dp, 'q_feedback.flag'), 'w').close()
 
     # Per-species optical properties: shape (NLEV, NBND, NSPECIES), C-order.
     # Species is the LAST (fastest-varying) axis, matching Fortran READ where
@@ -475,6 +479,8 @@ def main():
     output_terms = get_output_terms(cfg)
     # Optional: 2nd-order CFRAM via midstate-Planck (RRTMG only). Default 'base'.
     drdt_eval = get_drdt_eval(cfg)
+    # Optional: q as Manabe feedback (RRTMG only). Default 'independent'.
+    q_handling = get_q_handling(cfg)
 
     print("=== Python parallel CFRAM: %s, %d procs (nlev=%d) ===" %
           (cfg.get('case_name', args.case), nproc, NLEV))
@@ -482,6 +488,8 @@ def main():
         print("Output filter active: writing only dT/frc for %s" % output_terms)
     if drdt_eval == 'midstate':
         print("Planck matrix mode: midstate (2nd-order CFRAM, RRTMG only)")
+    if q_handling == 'feedback':
+        print("q partial mode: feedback (Manabe RH-fixed, RRTMG only)")
 
     # Pre-built single-column executable (nlat=1, nlon=1, nlev=NLEV).
     exe_name = get_executable(cfg)
@@ -539,6 +547,7 @@ def main():
         'fortran_plev': FORTRAN_PLEV,
         'nlev': NLEV,
         'drdt_eval': drdt_eval,
+        'q_handling': q_handling,
     }
     for s in AEROSOL_MAP:
         # Aerosols may be missing in CMIP6 raw cases; tolerate absence.

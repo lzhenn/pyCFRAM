@@ -25,9 +25,17 @@ radiation:
                              # cloud / aerosol / o3 / albedo / solar rows are
                              # always zero so they're filtered.
   drdt_eval: midstate        # 2nd-order CFRAM (Planck at (T_base+T_warm)/2).
-                             # For 4× CO2 the linearisation residual at base
-                             # state was ~0.5–1 K mid-trop; midstate should
-                             # cut that to ~0.1–0.2 K. RRTMG-only.
+                             # Resolved stratosphere residual (was 2-3 K, now <0.1 K).
+                             # RRTMG-only.
+  # q_handling: feedback     # OPTIONAL diagnostic (Manabe RH-fixed): compute
+                             # frc_q in T_warm atmosphere instead of T_base.
+                             # Tested 2026-05-11: improves surface closure
+                             # (+0.17 K → 0.0 K) but does NOT help mid-trop
+                             # (~0.5 K residual unchanged). Conclusion: mid-trop
+                             # residual is dominated by Manabe convective-
+                             # adjustment non-linearity, not q-T cross-term.
+                             # Code path retained for future investigation;
+                             # default 'independent' (standard CFRAM).
 
 run:
   nproc: auto                # auto-caps to 1 for 1×1 grid

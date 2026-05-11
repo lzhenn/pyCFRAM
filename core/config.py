@@ -156,6 +156,46 @@ def get_drdt_eval(case_cfg=None):
     return 'base'
 
 
+def get_q_handling(case_cfg=None):
+    """How to compute the water-vapour partial perturbation `frc_q`.
+
+    Returns
+    -------
+    str : 'independent' (default) or 'feedback'
+        'independent' = standard CFRAM:
+            frc_q = R(q_warm + T_base + others_base) - R(base)
+            Treats q as an independent radiative variable. Correct for
+            real atmospheres (ERA5, CESM2) where q has its own observed
+            variability decoupled from local T.
+
+        'feedback' = Manabe RH-fixed convention:
+            frc_q = R(q_warm + T_warm + others_base)
+                  - R(q_base + T_warm + others_base)
+            Treats q as a feedback determined by T (q = RH × q_sat(T)).
+            Computes the q radiative impact in the warm-T atmosphere,
+            avoiding the supersaturation artifact that plagues the
+            'independent' formulation when q_warm = RH × q_sat(T_warm)
+            is plugged into a cold (T_base) atmosphere. Costs +1
+            rad_driver call per cell (the warm-T q-base reference).
+
+            NOTE: changes the semantic interpretation of dT_q — it now
+            represents the q feedback evaluated at warm-T, not the
+            partial forcing from cold-T base. Closure check (Σ_X dT_X
+            ≈ dT_obs) may behave differently. Intended for idealized
+            RH-fixed models (climlab Manabe); do not use for ERA5/CESM2.
+
+    RRTMG-only — Fu engine ignores the flag.
+    """
+    if case_cfg:
+        v = case_cfg.get('radiation', {}).get('q_handling')
+        if v:
+            if v not in ('independent', 'feedback'):
+                raise ValueError(
+                    "radiation.q_handling must be 'independent' or 'feedback', got %r" % v)
+            return v
+    return 'independent'
+
+
 def get_output_terms(case_cfg=None):
     """List of dT_*/frc_* terms to write to cfram_result.nc, or None for all.
 

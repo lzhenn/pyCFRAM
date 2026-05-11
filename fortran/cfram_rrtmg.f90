@@ -122,6 +122,16 @@
     real(kind=rb) :: ts_mid, ps_mid_hPa, albedo_lw_mid, albedo_sw_mid
     real(kind=rb) :: zenith_mid, co2_mid
 
+    ! Manabe q-feedback option (RRTMG only). When data_prep/q_feedback.flag
+    ! exists, the q partial is recomputed in the warm-T atmosphere:
+    !   frc_q = R(q_warm + T_warm + others_base) − R(q_base + T_warm + others_base)
+    ! Physically meaningful q decomposition when q is a feedback tied to T
+    ! (Manabe RH-fixed). Avoids the supersaturation artifact in the default
+    ! formulation (q_warm in T_base atmosphere). Cost: +1 rad_driver call per
+    ! cell (the warm-T q-base reference state).
+    logical :: use_q_feedback
+    real(kind=rb), allocatable :: rad_1d_q_ref(:), fd_1d_q_ref(:), fu_1d_q_ref(:)
+
     !-------------------------------- Determine nlev from plev.dat size --------
     ! plev.dat is nlev × float64 (8 bytes). Inferring nlev from file size lets a
     ! single binary handle any vertical grid (per-case override via plev.dat).
@@ -208,14 +218,19 @@
     allocate(fds_1d_mid(nlev+1), fus_1d_mid(nlev+1))
     allocate(fd_1d_mid(nlev+1), fu_1d_mid(nlev+1))
     allocate(rad_1d_mid(nlev), lw_1d_mid(nlev), sw_1d_mid(nlev))
+    allocate(rad_1d_q_ref(nlev), fd_1d_q_ref(nlev+1), fu_1d_q_ref(nlev+1))
 
     ! Detect midstate-Planck mode via flag file. Python writes
     ! data_prep/drdt_midstate.flag when case.yaml has radiation.drdt_eval=midstate.
     inquire(file='data_prep/drdt_midstate.flag', exist=use_midstate_planck)
+    inquire(file='data_prep/q_feedback.flag',    exist=use_q_feedback)
     if (use_midstate_planck) then
         print *, '  Planck matrix: midstate (2nd-order CFRAM, drdt at (T_base+T_warm)/2)'
     else
         print *, '  Planck matrix: base state (1st-order CFRAM, drdt at T_base)'
+    end if
+    if (use_q_feedback) then
+        print *, '  q partial: feedback (Manabe RH-fixed: frc_q computed in T_warm atmosphere)'
     end if
 
     !-------------------------------- Read plev values --------
@@ -520,13 +535,38 @@
                    tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
                    fdl_1d, ful_1d, htr_lw_1d, fd_1d_co2, fu_1d_co2, htr_1d, rad_1d_co2, lw_1d, sw_1d)
 
-               ! Q
-             call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
-                   ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
-                   plev, t_base(:,ilat,ilon), q_warm(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
-                   cldiwc_base(:,ilat,ilon), tauaer_sw_base(:,ilat,ilon,:), ssaaer_sw_base(:,ilat,ilon,:), asmaer_sw_base(:,ilat,ilon,:),&
-                   tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
-                   fdl_1d, ful_1d, htr_lw_1d, fd_1d_q, fu_1d_q, htr_1d, rad_1d_q, lw_1d, sw_1d)
+               ! Q — water vapour partial.
+               ! Default (q_handling=independent): q_warm in T_base atmosphere
+               !   (standard CFRAM). frc_q subtracts rad_1d_base.
+               ! Manabe (q_handling=feedback): q_warm in T_warm atmosphere, with
+               !   an extra reference call R(q_base + T_warm + others_base).
+               !   frc_q subtracts rad_1d_q_ref. This isolates the q radiative
+               !   impact within the warm-T atmosphere, avoiding the
+               !   supersaturation artifact of q_warm in cold T_base.
+               if (use_q_feedback) then
+                   ! Perturbed: q_warm + T_warm + others_base
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
+                       ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
+                       plev, t_warm(:,ilat,ilon), q_warm(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
+                       cldiwc_base(:,ilat,ilon), tauaer_sw_base(:,ilat,ilon,:), ssaaer_sw_base(:,ilat,ilon,:), asmaer_sw_base(:,ilat,ilon,:),&
+                       tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
+                       fdl_1d, ful_1d, htr_lw_1d, fd_1d_q, fu_1d_q, htr_1d, rad_1d_q, lw_1d, sw_1d)
+                   ! Reference: q_base + T_warm + others_base (extra rad_driver call)
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
+                       ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
+                       plev, t_warm(:,ilat,ilon), q_base(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
+                       cldiwc_base(:,ilat,ilon), tauaer_sw_base(:,ilat,ilon,:), ssaaer_sw_base(:,ilat,ilon,:), asmaer_sw_base(:,ilat,ilon,:),&
+                       tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
+                       fdl_1d, ful_1d, htr_lw_1d, fd_1d_q_ref, fu_1d_q_ref, htr_1d, rad_1d_q_ref, lw_1d, sw_1d)
+               else
+                   ! Standard CFRAM: q_warm in T_base atmosphere; reference = base
+                   call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
+                       ts_base(ilat,ilon), zenith_base(ilat,ilon), albedo_sw_base(ilat,ilon), albedo_lw_base(ilat,ilon),&
+                       plev, t_base(:,ilat,ilon), q_warm(:,ilat,ilon), o3_base(:,ilat,ilon), cldfrac_base(:,ilat,ilon), cldlwc_base(:,ilat,ilon),&
+                       cldiwc_base(:,ilat,ilon), tauaer_sw_base(:,ilat,ilon,:), ssaaer_sw_base(:,ilat,ilon,:), asmaer_sw_base(:,ilat,ilon,:),&
+                       tauaer_lw_base(:,ilat,ilon,:), fds_1d, fus_1d, htr_sw_1d,&
+                       fdl_1d, ful_1d, htr_lw_1d, fd_1d_q, fu_1d_q, htr_1d, rad_1d_q, lw_1d, sw_1d)
+               end if
 
                ! ts
              call rad_driver(nlayer, iaer, icld, co2ppmv_base, ch4ppmv, n2oppmv, ps_base(ilat,ilon)/100.0,&
@@ -662,8 +702,15 @@
                frc_warm(nlayer+1)    = fd_1d_warm(nlayer+1)-fu_1d_warm(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
                frc_co2(1:nlayer)     = rad_1d_co2(1:nlayer) - rad_1d_base(1:nlayer)
                frc_co2(nlayer+1)     = fd_1d_co2(nlayer+1)-fu_1d_co2(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
-               frc_q(1:nlayer)       = rad_1d_q(1:nlayer) - rad_1d_base(1:nlayer)
-               frc_q(nlayer+1)       = fd_1d_q(nlayer+1)-fu_1d_q(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
+               ! frc_q: standard CFRAM subtracts the base radiation; Manabe
+               ! feedback subtracts the warm-T q-base reference (computed above).
+               if (use_q_feedback) then
+                   frc_q(1:nlayer) = rad_1d_q(1:nlayer) - rad_1d_q_ref(1:nlayer)
+                   frc_q(nlayer+1) = fd_1d_q(nlayer+1)-fu_1d_q(nlayer+1)-(fd_1d_q_ref(nlayer+1)-fu_1d_q_ref(nlayer+1))
+               else
+                   frc_q(1:nlayer) = rad_1d_q(1:nlayer) - rad_1d_base(1:nlayer)
+                   frc_q(nlayer+1) = fd_1d_q(nlayer+1)-fu_1d_q(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
+               end if
                frc_ts(1:nlayer)      = rad_1d_ts(1:nlayer) - rad_1d_base(1:nlayer)
                frc_ts(nlayer+1)      = fd_1d_ts(nlayer+1)-fu_1d_ts(nlayer+1)-(fd_1d_base(nlayer+1)-fu_1d_base(nlayer+1))
                frc_o3(1:nlayer)      = rad_1d_o3(1:nlayer) - rad_1d_base(1:nlayer)
